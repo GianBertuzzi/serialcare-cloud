@@ -1,10 +1,15 @@
-function getDatabaseStatus() {
-  return {
-    configured: false,
-    message: "Database connection is not configured yet"
-  };
+const { Pool } = require("pg");
+require("dotenv").config();
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL
+});
+
+function query(text, params) {
+  return pool.query(text, params);
 }
 
 module.exports = {
-  getDatabaseStatus
+  query,
+  pool
 };
