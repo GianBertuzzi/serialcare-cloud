@@ -8,7 +8,7 @@ INSERT INTO usuarios (nombre, email, password_hash, id_rol, estado) VALUES
   (
     'Administrador SerialCare',
     'admin@serialcare.cl',
-    '$2b$10$b9xfhgdLd1zxjNVIyfhj..j.tZbco12XyCHEbLq.R9W1F.h7uSQMS',
+    '$2b$10$.1cAA5VG3UX1/VTztx1OD./RqwrkJE5bj/NAh/FDJVAXOrO1pE58C',
     (SELECT id_rol FROM roles WHERE nombre_rol = 'ADMIN'),
     'ACTIVO'
   ),

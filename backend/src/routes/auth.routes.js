@@ -18,8 +18,9 @@ function publicUser(user) {
 
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
+  const emailLogin = typeof email === "string" ? email.trim().toLowerCase() : "";
 
-  if (!email || !password) {
+  if (!emailLogin || !password) {
     return res.status(400).json({ error: "Email y password son obligatorios" });
   }
 
@@ -34,13 +35,14 @@ router.post("/login", async (req, res) => {
         u.nombre,
         u.email,
         u.password_hash,
+        u.id_rol,
         u.estado,
         r.nombre_rol AS rol
       FROM usuarios u
       INNER JOIN roles r ON r.id_rol = u.id_rol
       WHERE u.email = $1
       LIMIT 1`,
-      [email]
+      [emailLogin]
     );
 
     if (result.rows.length === 0) {
@@ -48,6 +50,15 @@ router.post("/login", async (req, res) => {
     }
 
     const user = result.rows[0];
+
+    if (!user.password_hash) {
+      console.error("Error en login: usuario sin password_hash", {
+        id_usuario: user.id_usuario,
+        email: user.email
+      });
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+
     const passwordOk = await bcrypt.compare(password, user.password_hash);
 
     if (!passwordOk) {
