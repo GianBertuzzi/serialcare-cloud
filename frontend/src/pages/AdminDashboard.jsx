@@ -1,8 +1,21 @@
 import { useEffect, useState } from "react";
+import AppLayout from "../components/AppLayout.jsx";
 import DataTable from "../components/DataTable.jsx";
+import NewOrderForm from "../components/NewOrderForm.jsx";
+import OrderActionPanel from "../components/OrderActionPanel.jsx";
+import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
-import { useAuth } from "../context/AuthContext.jsx";
 import api from "../services/api";
+
+const initialModeloForm = {
+  codigo_comercial: "",
+  descripcion: "",
+  familia: "",
+  marca: "",
+  valor_revision: "",
+  valor_mano_obra: "",
+  certificado: "true"
+};
 
 function formatDate(value) {
   if (!value) {
@@ -30,16 +43,27 @@ function formatCurrency(value) {
 }
 
 function AdminDashboard() {
-  const { logout, user } = useAuth();
   const [productos, setProductos] = useState([]);
   const [precios, setPrecios] = useState([]);
+  const [ordenes, setOrdenes] = useState([]);
   const [nombreSucursal, setNombreSucursal] = useState("");
   const [editingPrecioId, setEditingPrecioId] = useState(null);
   const [editingRevisionValue, setEditingRevisionValue] = useState("");
+  const [modeloForm, setModeloForm] = useState(initialModeloForm);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingPrecios, setIsLoadingPrecios] = useState(true);
+  const [isLoadingOrdenes, setIsLoadingOrdenes] = useState(true);
   const [error, setError] = useState("");
   const [preciosError, setPreciosError] = useState("");
+  const [ordenesError, setOrdenesError] = useState("");
+  const [createModeloError, setCreateModeloError] = useState("");
+  const [orderSuccess, setOrderSuccess] = useState("");
+  const [precioSuccess, setPrecioSuccess] = useState("");
+  const [isOrderFormOpen, setIsOrderFormOpen] = useState(false);
+  const [activeOrderAction, setActiveOrderAction] = useState(null);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [isModeloFormOpen, setIsModeloFormOpen] = useState(false);
+  const [isCreatingModelo, setIsCreatingModelo] = useState(false);
   const [updatingPrecioId, setUpdatingPrecioId] = useState(null);
 
   async function loadProductos() {
@@ -77,10 +101,136 @@ function AdminDashboard() {
     }
   }
 
+  async function loadOrdenes() {
+    setIsLoadingOrdenes(true);
+    setOrdenesError("");
+
+    try {
+      const response = await api.get("/ordenes");
+      setOrdenes(response.data.ordenes || []);
+    } catch (requestError) {
+      setOrdenesError(
+        requestError.response?.data?.error ||
+          "No se pudieron cargar las ordenes de servicio."
+      );
+    } finally {
+      setIsLoadingOrdenes(false);
+    }
+  }
+
   useEffect(() => {
     loadProductos();
     loadPrecios();
+    loadOrdenes();
   }, []);
+
+  function openOrderForm() {
+    setOrderSuccess("");
+    setIsOrderFormOpen(true);
+  }
+
+  function closeOrderForm() {
+    setIsOrderFormOpen(false);
+  }
+
+  async function handleOrderCreated() {
+    setIsOrderFormOpen(false);
+    setOrderSuccess("Orden creada correctamente.");
+    await loadOrdenes();
+    await loadProductos();
+  }
+
+  function openOrderAction(orden, action) {
+    setOrderSuccess("");
+    setSelectedOrder(orden);
+    setActiveOrderAction(action);
+  }
+
+  function closeOrderAction() {
+    setSelectedOrder(null);
+    setActiveOrderAction(null);
+  }
+
+  async function handleOrderActionSaved(message) {
+    closeOrderAction();
+    setOrderSuccess(message);
+    await loadOrdenes();
+  }
+
+  function openModeloForm() {
+    setPrecioSuccess("");
+    setCreateModeloError("");
+    setModeloForm(initialModeloForm);
+    setIsModeloFormOpen(true);
+  }
+
+  function closeModeloForm() {
+    setIsModeloFormOpen(false);
+    setCreateModeloError("");
+    setModeloForm(initialModeloForm);
+  }
+
+  function handleModeloFormChange(event) {
+    const { name, value } = event.target;
+    setModeloForm((current) => ({ ...current, [name]: value }));
+  }
+
+  async function handleCreateModelo(event) {
+    event.preventDefault();
+    setCreateModeloError("");
+    setPrecioSuccess("");
+
+    if (!modeloForm.codigo_comercial.trim()) {
+      setCreateModeloError("Codigo comercial es obligatorio.");
+      return;
+    }
+
+    if (!modeloForm.descripcion.trim()) {
+      setCreateModeloError("Descripcion es obligatoria.");
+      return;
+    }
+
+    const revisionValue = Number(modeloForm.valor_revision);
+
+    if (!Number.isFinite(revisionValue) || revisionValue < 0) {
+      setCreateModeloError("Valor revision debe ser numero mayor o igual a 0.");
+      return;
+    }
+
+    const manoObraValue =
+      modeloForm.valor_mano_obra === "" ? 0 : Number(modeloForm.valor_mano_obra);
+
+    if (!Number.isFinite(manoObraValue) || manoObraValue < 0) {
+      setCreateModeloError(
+        "Valor mano de obra debe ser numero mayor o igual a 0."
+      );
+      return;
+    }
+
+    setIsCreatingModelo(true);
+
+    try {
+      await api.post("/modelos", {
+        codigo_comercial: modeloForm.codigo_comercial.trim(),
+        descripcion: modeloForm.descripcion.trim(),
+        familia: modeloForm.familia.trim(),
+        marca: modeloForm.marca.trim(),
+        certificado: modeloForm.certificado === "true",
+        valor_revision: revisionValue,
+        valor_mano_obra: manoObraValue
+      });
+      closeModeloForm();
+      setPrecioSuccess("Modelo creado y precio configurado correctamente.");
+      await loadPrecios();
+    } catch (requestError) {
+      setCreateModeloError(
+        requestError.response?.data?.error ||
+          "No se pudo crear el modelo con su precio."
+      );
+    } finally {
+      setIsCreatingModelo(false);
+    }
+  }
 
   function startEditingPrecio(precio) {
     setEditingPrecioId(precio.id_precio);
@@ -95,12 +245,14 @@ function AdminDashboard() {
   async function handleUpdatePrecio(idPrecio) {
     setUpdatingPrecioId(idPrecio);
     setPreciosError("");
+    setPrecioSuccess("");
 
     try {
       await api.put(`/precios-sucursal/${idPrecio}`, {
         valor_revision: Number(editingRevisionValue || 0)
       });
       cancelEditingPrecio();
+      setPrecioSuccess("Valor de revision actualizado correctamente.");
       await loadPrecios();
     } catch (requestError) {
       setPreciosError(
@@ -111,6 +263,85 @@ function AdminDashboard() {
       setUpdatingPrecioId(null);
     }
   }
+
+  const ordenColumns = [
+    {
+      key: "id_orden",
+      label: "ID",
+      searchValue: (orden) => orden.id_orden,
+      sortValue: (orden) => Number(orden.id_orden || 0)
+    },
+    {
+      key: "numero_serie",
+      label: "Numero de serie",
+      searchValue: (orden) =>
+        `${orden.numero_serie || ""} ${orden.marca || ""} ${orden.modelo || ""} ${orden.descripcion_modelo || ""}`,
+      render: (orden) => (
+        <>
+          <strong>{orden.numero_serie || "Sin serie"}</strong>
+          {orden.marca || orden.modelo ? (
+            <span className="table-subtext">
+              {[orden.marca, orden.modelo].filter(Boolean).join(" - ")}
+            </span>
+          ) : null}
+        </>
+      )
+    },
+    {
+      key: "nombre_sucursal",
+      label: "Sucursal",
+      searchValue: (orden) => orden.nombre_sucursal || "Sin sucursal",
+      render: (orden) => orden.nombre_sucursal || "Sin sucursal"
+    },
+    {
+      key: "tipo_orden",
+      label: "Tipo",
+      searchValue: (orden) => orden.tipo_orden || "Sin tipo",
+      render: (orden) => orden.tipo_orden || "Sin tipo"
+    },
+    {
+      key: "diagnostico",
+      label: "Diagnostico",
+      searchValue: (orden) => orden.diagnostico || "Sin diagnostico",
+      render: (orden) => orden.diagnostico || "Sin diagnostico"
+    },
+    {
+      key: "estado",
+      label: "Estado",
+      searchValue: (orden) => orden.estado,
+      render: (orden) => <StatusBadge value={orden.estado} />
+    },
+    {
+      key: "valor_revision",
+      label: "Valor revision",
+      searchValue: (orden) => orden.valor_revision,
+      sortValue: (orden) => Number(orden.valor_revision || 0),
+      render: (orden) => formatCurrency(orden.valor_revision)
+    },
+    {
+      key: "fecha_creacion",
+      label: "Fecha creacion",
+      searchValue: (orden) => formatDate(orden.fecha_creacion),
+      sortValue: (orden) => orden.fecha_creacion,
+      render: (orden) => formatDate(orden.fecha_creacion)
+    },
+    {
+      key: "acciones",
+      label: "Acciones",
+      searchable: false,
+      sortable: false,
+      render: (orden) => (
+        <div className="table-actions">
+          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openOrderAction(orden, "repuesto")}>
+            Agregar repuesto
+          </button>
+          <button className="btn btn-outline-success btn-sm" type="button" onClick={() => openOrderAction(orden, "garantia")}>
+            Solicitar garantia
+          </button>
+        </div>
+      )
+    }
+  ];
 
   const productoColumns = [
     {
@@ -194,7 +425,7 @@ function AdminDashboard() {
       render: (precio) =>
         editingPrecioId === precio.id_precio ? (
           <input
-            className="price-input"
+            className="form-control form-control-sm price-input"
             type="number"
             min="0"
             value={editingRevisionValue}
@@ -224,7 +455,7 @@ function AdminDashboard() {
         editingPrecioId === precio.id_precio ? (
           <div className="table-actions">
             <button
-              className="approve-button"
+              className="btn btn-success btn-sm"
               type="button"
               disabled={updatingPrecioId === precio.id_precio}
               onClick={() => handleUpdatePrecio(precio.id_precio)}
@@ -232,7 +463,7 @@ function AdminDashboard() {
               Guardar
             </button>
             <button
-              className="secondary-button compact-button"
+              className="btn btn-outline-secondary btn-sm"
               type="button"
               disabled={updatingPrecioId === precio.id_precio}
               onClick={cancelEditingPrecio}
@@ -242,7 +473,7 @@ function AdminDashboard() {
           </div>
         ) : (
           <button
-            className="secondary-button compact-button"
+            className="btn btn-outline-primary btn-sm"
             type="button"
             onClick={() => startEditingPrecio(precio)}
           >
@@ -253,34 +484,55 @@ function AdminDashboard() {
   ];
 
   return (
-    <main className="page-shell">
-      <header className="dashboard-header">
-        <div>
-          <p className="eyebrow">ADMIN</p>
-          <h1>Panel administrador</h1>
-          <p className="muted">{user?.nombre}</p>
+    <AppLayout title="Panel administrador" eyebrow="ADMIN">
+      <section id="dashboard" className="row g-3 mb-4">
+        <div className="col-md-4">
+          <StatCard title="Sucursal" value={nombreSucursal || "Operativa"} detail="Administracion local" tone="primary" label="SU" />
         </div>
-        <button className="secondary-button" type="button" onClick={logout}>
-          Cerrar sesion
-        </button>
-      </header>
-
-      <section className="dashboard-grid">
-        <article className="panel">
-          <h2>Sucursal</h2>
-          <p>{nombreSucursal || "Sucursal operativa"}</p>
-        </article>
-        <article className="panel">
-          <h2>Productos serializados</h2>
-          <p>{productos.length} productos visibles para tu sucursal.</p>
-        </article>
-        <article className="panel">
-          <h2>Valores de revision</h2>
-          <p>{precios.length} modelos con precio configurado.</p>
-        </article>
+        <div className="col-md-4">
+          <StatCard title="Productos visibles" value={productos.length} detail="Equipos para tu sucursal" tone="success" label="PR" />
+        </div>
+        <div className="col-md-4">
+          <StatCard title="Valores de revision" value={precios.length} detail="Modelos con precio" tone="warning" label="VR" />
+        </div>
       </section>
 
+      {orderSuccess ? <p className="alert alert-success">{orderSuccess}</p> : null}
+      {isOrderFormOpen ? (
+        <NewOrderForm onCancel={closeOrderForm} onCreated={handleOrderCreated} />
+      ) : null}
+
+      {activeOrderAction ? (
+        <OrderActionPanel
+          orden={selectedOrder}
+          type={activeOrderAction}
+          onCancel={closeOrderAction}
+          onSaved={handleOrderActionSaved}
+        />
+      ) : null}
+
       <DataTable
+        sectionId="ordenes"
+        eyebrow="Servicio tecnico"
+        title="Ordenes de servicio"
+        rows={ordenes}
+        columns={ordenColumns}
+        getRowKey={(orden) => orden.id_orden}
+        searchPlaceholder="Buscar por serie, modelo, diagnostico o estado"
+        emptyMessage="No hay ordenes de servicio registradas."
+        loading={isLoadingOrdenes}
+        loadingMessage="Cargando ordenes..."
+        error={ordenesError}
+        initialSortKey="id_orden"
+        toolbarAction={{
+          label: isOrderFormOpen ? "Cancelar" : "+ Nueva orden",
+          className: isOrderFormOpen ? "btn btn-outline-secondary" : "btn btn-primary",
+          onClick: isOrderFormOpen ? closeOrderForm : openOrderForm
+        }}
+      />
+
+      <DataTable
+        sectionId="productos"
         eyebrow="Inventario"
         title="Productos registrados"
         rows={productos}
@@ -294,7 +546,67 @@ function AdminDashboard() {
         initialSortKey="numero_serie"
       />
 
+      {precioSuccess ? <p className="alert alert-success">{precioSuccess}</p> : null}
+
+      {isModeloFormOpen ? (
+        <section className="card surface-card border-0 shadow-sm model-form-section">
+          <div className="card-header bg-white border-0">
+            <p className="eyebrow mb-1">Precios sucursal</p>
+            <h2 className="h5 mb-0">Agregar modelo</h2>
+          </div>
+          <div className="card-body">
+            <form className="model-form" onSubmit={handleCreateModelo}>
+              <div className="row g-3">
+                <div className="col-md-4">
+                  <label className="form-label">Codigo comercial</label>
+                  <input className="form-control" name="codigo_comercial" value={modeloForm.codigo_comercial} onChange={handleModeloFormChange} placeholder="TF75" required />
+                </div>
+                <div className="col-md-8">
+                  <label className="form-label">Descripcion</label>
+                  <input className="form-control" name="descripcion" value={modeloForm.descripcion} onChange={handleModeloFormChange} placeholder="Motor gasolina 7.5 HP" required />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Familia</label>
+                  <input className="form-control" name="familia" value={modeloForm.familia} onChange={handleModeloFormChange} placeholder="Motores gasolina" />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Marca</label>
+                  <input className="form-control" name="marca" value={modeloForm.marca} onChange={handleModeloFormChange} placeholder="Toyama" />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Certificado</label>
+                  <select className="form-select" name="certificado" value={modeloForm.certificado} onChange={handleModeloFormChange}>
+                    <option value="true">Si</option>
+                    <option value="false">No</option>
+                  </select>
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Valor revision</label>
+                  <input className="form-control" name="valor_revision" type="number" min="0" value={modeloForm.valor_revision} onChange={handleModeloFormChange} placeholder="25000" required />
+                </div>
+                <div className="col-md-6">
+                  <label className="form-label">Valor mano de obra</label>
+                  <input className="form-control" name="valor_mano_obra" type="number" min="0" value={modeloForm.valor_mano_obra} onChange={handleModeloFormChange} placeholder="Opcional" />
+                </div>
+              </div>
+
+              {createModeloError ? <p className="alert alert-danger mt-3 mb-0">{createModeloError}</p> : null}
+
+              <div className="d-flex flex-wrap gap-2 mt-3">
+                <button className="btn btn-primary" type="submit" disabled={isCreatingModelo}>
+                  {isCreatingModelo ? "Creando..." : "Crear modelo"}
+                </button>
+                <button className="btn btn-outline-secondary" type="button" disabled={isCreatingModelo} onClick={closeModeloForm}>
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </section>
+      ) : null}
+
       <DataTable
+        sectionId="modelos"
         eyebrow="Precios sucursal"
         title="Modelos y valores de revision"
         rows={precios}
@@ -307,12 +619,12 @@ function AdminDashboard() {
         error={preciosError}
         initialSortKey="codigo_comercial"
         toolbarAction={{
-          label: "Agregar precio/modelo",
-          disabled: true,
-          className: "secondary-button"
+          label: isModeloFormOpen ? "Cancelar" : "Agregar modelo",
+          className: isModeloFormOpen ? "btn btn-outline-secondary" : "btn btn-primary",
+          onClick: isModeloFormOpen ? closeModeloForm : openModeloForm
         }}
       />
-    </main>
+    </AppLayout>
   );
 }
 

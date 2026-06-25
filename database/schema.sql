@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS garantias CASCADE;
+DROP TABLE IF EXISTS repuestos_usados CASCADE;
 DROP TABLE IF EXISTS ordenes_servicio CASCADE;
 DROP TABLE IF EXISTS productos CASCADE;
 DROP TABLE IF EXISTS precios_modelo_sucursal CASCADE;
@@ -68,22 +69,38 @@ CREATE TABLE productos (
 CREATE TABLE ordenes_servicio (
   id_orden SERIAL PRIMARY KEY,
   id_producto INTEGER NOT NULL REFERENCES productos(id_producto) ON DELETE CASCADE,
-  id_tecnico INTEGER NOT NULL REFERENCES usuarios(id_usuario),
+  id_tecnico INTEGER NULL REFERENCES usuarios(id_usuario),
   id_sucursal INTEGER REFERENCES sucursales(id_sucursal),
   id_modelo INTEGER NULL REFERENCES productos_modelo(id_modelo),
   costo_ingreso_taller INTEGER NOT NULL DEFAULT 0,
   valor_revision INTEGER NOT NULL DEFAULT 0,
   tipo_orden VARCHAR(30) NOT NULL DEFAULT 'REPARACION',
   diagnostico TEXT NOT NULL,
-  estado VARCHAR(30) NOT NULL DEFAULT 'ABIERTA',
+  estado VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE',
   fecha_creacion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE repuestos_usados (
+  id_repuesto_usado SERIAL PRIMARY KEY,
+  id_orden INTEGER NOT NULL REFERENCES ordenes_servicio(id_orden) ON DELETE CASCADE,
+  nombre_repuesto VARCHAR(120) NOT NULL,
+  cantidad INTEGER NOT NULL DEFAULT 1,
+  precio_unitario INTEGER NOT NULL DEFAULT 0,
+  cubierto_garantia BOOLEAN DEFAULT FALSE,
+  observacion VARCHAR(200),
+  fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE garantias (
   id_garantia SERIAL PRIMARY KEY,
+  id_orden INTEGER NOT NULL REFERENCES ordenes_servicio(id_orden) ON DELETE CASCADE,
   id_producto INTEGER NOT NULL REFERENCES productos(id_producto) ON DELETE CASCADE,
+  id_sucursal INTEGER NOT NULL REFERENCES sucursales(id_sucursal),
+  id_tecnico INTEGER NULL REFERENCES usuarios(id_usuario),
   estado VARCHAR(30) NOT NULL DEFAULT 'PENDIENTE',
   observacion TEXT,
+  observacion_marca TEXT,
+  fecha_solicitud TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   fecha_revision TIMESTAMP
 );
 
@@ -96,4 +113,8 @@ CREATE INDEX idx_precios_modelo_sucursal_id_modelo ON precios_modelo_sucursal(id
 CREATE INDEX idx_ordenes_servicio_id_producto ON ordenes_servicio(id_producto);
 CREATE INDEX idx_ordenes_servicio_id_sucursal ON ordenes_servicio(id_sucursal);
 CREATE INDEX idx_ordenes_servicio_id_modelo ON ordenes_servicio(id_modelo);
+CREATE INDEX idx_repuestos_usados_id_orden ON repuestos_usados(id_orden);
+CREATE INDEX idx_garantias_id_orden ON garantias(id_orden);
 CREATE INDEX idx_garantias_id_producto ON garantias(id_producto);
+CREATE INDEX idx_garantias_id_sucursal ON garantias(id_sucursal);
+CREATE INDEX idx_garantias_id_tecnico ON garantias(id_tecnico);

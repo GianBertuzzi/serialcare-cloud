@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
+import AppLayout from "../components/AppLayout.jsx";
 import DataTable from "../components/DataTable.jsx";
+import NewOrderForm from "../components/NewOrderForm.jsx";
+import OrderActionPanel from "../components/OrderActionPanel.jsx";
+import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
-import { useAuth } from "../context/AuthContext.jsx";
 import api from "../services/api";
 
 const ESTADOS_ORDEN = ["PENDIENTE", "EN_DIAGNOSTICO", "REPARADA", "CERRADA"];
@@ -32,10 +35,13 @@ function formatCurrency(value) {
 }
 
 function TecnicoDashboard() {
-  const { logout, user } = useAuth();
   const [ordenes, setOrdenes] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
+  const [orderSuccess, setOrderSuccess] = useState("");
+  const [isOrderFormOpen, setIsOrderFormOpen] = useState(false);
+  const [activeOrderAction, setActiveOrderAction] = useState(null);
+  const [selectedOrder, setSelectedOrder] = useState(null);
   const [updatingId, setUpdatingId] = useState(null);
 
   async function loadOrdenes() {
@@ -59,6 +65,38 @@ function TecnicoDashboard() {
     loadOrdenes();
   }, []);
 
+  function openOrderForm() {
+    setOrderSuccess("");
+    setIsOrderFormOpen(true);
+  }
+
+  function closeOrderForm() {
+    setIsOrderFormOpen(false);
+  }
+
+  async function handleOrderCreated() {
+    setIsOrderFormOpen(false);
+    setOrderSuccess("Orden creada correctamente.");
+    await loadOrdenes();
+  }
+
+  function openOrderAction(orden, action) {
+    setOrderSuccess("");
+    setSelectedOrder(orden);
+    setActiveOrderAction(action);
+  }
+
+  function closeOrderAction() {
+    setSelectedOrder(null);
+    setActiveOrderAction(null);
+  }
+
+  async function handleOrderActionSaved(message) {
+    closeOrderAction();
+    setOrderSuccess(message);
+    await loadOrdenes();
+  }
+
   async function handleEstadoChange(idOrden, estado) {
     setUpdatingId(idOrden);
     setError("");
@@ -76,6 +114,9 @@ function TecnicoDashboard() {
     }
   }
 
+  const pendientes = ordenes.filter((orden) => orden.estado === "PENDIENTE").length;
+  const enDiagnostico = ordenes.filter((orden) => orden.estado === "EN_DIAGNOSTICO").length;
+
   const ordenColumns = [
     {
       key: "id_orden",
@@ -86,7 +127,8 @@ function TecnicoDashboard() {
     {
       key: "numero_serie",
       label: "Numero de serie",
-      searchValue: (orden) => orden.numero_serie,
+      searchValue: (orden) =>
+        `${orden.numero_serie || ""} ${orden.marca || ""} ${orden.modelo || ""} ${orden.descripcion_modelo || ""}`,
       render: (orden) => (
         <>
           <strong>{orden.numero_serie || "Sin serie"}</strong>
@@ -112,9 +154,16 @@ function TecnicoDashboard() {
       )
     },
     {
+      key: "tipo_orden",
+      label: "Tipo",
+      searchValue: (orden) => orden.tipo_orden || "Sin tipo",
+      render: (orden) => orden.tipo_orden || "Sin tipo"
+    },
+    {
       key: "diagnostico",
       label: "Diagnostico",
-      searchValue: (orden) => orden.diagnostico
+      searchValue: (orden) => orden.diagnostico || "Sin diagnostico",
+      render: (orden) => orden.diagnostico || "Sin diagnostico"
     },
     {
       key: "estado",
@@ -129,7 +178,7 @@ function TecnicoDashboard() {
       sortable: false,
       render: (orden) => (
         <select
-          className="state-select"
+          className="form-select form-select-sm state-select"
           value={orden.estado}
           disabled={updatingId === orden.id_orden}
           onChange={(event) => handleEstadoChange(orden.id_orden, event.target.value)}
@@ -148,38 +197,56 @@ function TecnicoDashboard() {
       searchValue: (orden) => formatDate(orden.fecha_creacion),
       sortValue: (orden) => orden.fecha_creacion,
       render: (orden) => formatDate(orden.fecha_creacion)
+    },
+    {
+      key: "acciones",
+      label: "Acciones",
+      searchable: false,
+      sortable: false,
+      render: (orden) => (
+        <div className="table-actions">
+          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openOrderAction(orden, "repuesto")}>
+            Agregar repuesto
+          </button>
+          <button className="btn btn-outline-success btn-sm" type="button" onClick={() => openOrderAction(orden, "garantia")}>
+            Solicitar garantia
+          </button>
+        </div>
+      )
     }
   ];
 
   return (
-    <main className="page-shell">
-      <header className="dashboard-header">
-        <div>
-          <p className="eyebrow">TECNICO</p>
-          <h1>Panel tecnico</h1>
-          <p className="muted">{user?.nombre}</p>
+    <AppLayout title="Panel tecnico" eyebrow="TECNICO">
+      <section id="dashboard" className="row g-3 mb-4">
+        <div className="col-md-4">
+          <StatCard title="Ordenes asignadas" value={ordenes.length} detail="Seguimiento tecnico" tone="primary" label="OS" />
         </div>
-        <button className="secondary-button" type="button" onClick={logout}>
-          Cerrar sesion
-        </button>
-      </header>
-
-      <section className="dashboard-grid">
-        <article className="panel">
-          <h2>Ordenes asignadas</h2>
-          <p>{ordenes.length} ordenes registradas para seguimiento tecnico.</p>
-        </article>
-        <article className="panel">
-          <h2>Consulta de productos</h2>
-          <p>Busqueda de equipos serializados para soporte tecnico.</p>
-        </article>
-        <article className="panel">
-          <h2>Alertas</h2>
-          <p>Casos con garantia pendiente o alerta de propiedad.</p>
-        </article>
+        <div className="col-md-4">
+          <StatCard title="En diagnostico" value={enDiagnostico} detail="Equipos en revision" tone="warning" label="ED" />
+        </div>
+        <div className="col-md-4">
+          <StatCard title="Pendientes" value={pendientes} detail="Ingresos por atender" tone="danger" label="PE" />
+        </div>
       </section>
 
+      {orderSuccess ? <p className="alert alert-success">{orderSuccess}</p> : null}
+
+      {isOrderFormOpen ? (
+        <NewOrderForm onCancel={closeOrderForm} onCreated={handleOrderCreated} />
+      ) : null}
+
+      {activeOrderAction ? (
+        <OrderActionPanel
+          orden={selectedOrder}
+          type={activeOrderAction}
+          onCancel={closeOrderAction}
+          onSaved={handleOrderActionSaved}
+        />
+      ) : null}
+
       <DataTable
+        sectionId="ordenes"
         eyebrow="Servicio tecnico"
         title="Ordenes de servicio"
         rows={ordenes}
@@ -191,8 +258,13 @@ function TecnicoDashboard() {
         loadingMessage="Cargando ordenes..."
         error={error}
         initialSortKey="id_orden"
+        toolbarAction={{
+          label: isOrderFormOpen ? "Cancelar" : "+ Nueva orden",
+          className: isOrderFormOpen ? "btn btn-outline-secondary" : "btn btn-primary",
+          onClick: isOrderFormOpen ? closeOrderForm : openOrderForm
+        }}
       />
-    </main>
+    </AppLayout>
   );
 }
 

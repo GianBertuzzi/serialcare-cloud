@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+﻿import { useMemo, useState } from "react";
 
 const DEFAULT_PAGE_SIZE = 8;
 
@@ -53,7 +53,8 @@ function DataTable({
   error = "",
   pageSize = DEFAULT_PAGE_SIZE,
   initialSortKey,
-  toolbarAction
+  toolbarAction,
+  sectionId
 }) {
   const [search, setSearch] = useState("");
   const [sortKey, setSortKey] = useState(initialSortKey || columns[0]?.key);
@@ -125,18 +126,18 @@ function DataTable({
   }
 
   return (
-    <section className="panel dashboard-table-section data-table-section">
-      <div className="data-table-toolbar">
+    <section id={sectionId} className="card surface-card data-table-section border-0 shadow-sm">
+      <div className="card-header bg-white border-0 data-table-toolbar">
         <div>
-          {eyebrow ? <p className="eyebrow">{eyebrow}</p> : null}
-          <h2>{title}</h2>
-          <p className="table-count">
+          {eyebrow ? <p className="eyebrow mb-1">{eyebrow}</p> : null}
+          <h2 className="h5 mb-1">{title}</h2>
+          <p className="table-count mb-0">
             {filteredRows.length} de {rows.length} registros
           </p>
         </div>
         <div className="table-toolbar-actions">
           <input
-            className="table-search"
+            className="form-control table-search"
             type="search"
             value={search}
             onChange={handleSearchChange}
@@ -144,7 +145,7 @@ function DataTable({
           />
           {toolbarAction ? (
             <button
-              className={toolbarAction.className || "secondary-button"}
+              className={toolbarAction.className || "btn btn-outline-secondary"}
               type="button"
               disabled={toolbarAction.disabled}
               onClick={toolbarAction.onClick}
@@ -155,17 +156,23 @@ function DataTable({
         </div>
       </div>
 
-      {loading ? <p className="muted">{loadingMessage}</p> : null}
-      {error ? <p className="alert error-alert">{error}</p> : null}
+      {loading ? <div className="card-body text-secondary">{loadingMessage}</div> : null}
+      {error ? (
+        <div className="card-body pt-0">
+          <p className="alert alert-danger mb-0">{error}</p>
+        </div>
+      ) : null}
 
       {!loading && !error && sortedRows.length === 0 ? (
-        <p className="empty-state">{emptyMessage}</p>
+        <div className="card-body">
+          <p className="empty-state mb-0">{emptyMessage}</p>
+        </div>
       ) : null}
 
       {!loading && !error && sortedRows.length > 0 ? (
         <>
-          <div className="table-wrapper">
-            <table>
+          <div className="table-responsive">
+            <table className="table table-hover align-middle serial-table mb-0">
               <thead>
                 <tr>
                   {columns.map((column) => {
@@ -209,9 +216,9 @@ function DataTable({
           </div>
 
           {pageCount > 1 ? (
-            <div className="pagination-bar">
+            <div className="card-footer bg-white border-0 pagination-bar">
               <button
-                className="secondary-button compact-button"
+                className="btn btn-outline-secondary btn-sm"
                 type="button"
                 disabled={currentPage === 1}
                 onClick={() => setPage((current) => Math.max(1, current - 1))}
@@ -222,7 +229,7 @@ function DataTable({
                 Pagina {currentPage} de {pageCount}
               </span>
               <button
-                className="secondary-button compact-button"
+                className="btn btn-outline-secondary btn-sm"
                 type="button"
                 disabled={currentPage === pageCount}
                 onClick={() =>

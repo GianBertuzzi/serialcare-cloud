@@ -1,4 +1,4 @@
-const express = require("express");
+﻿const express = require("express");
 const db = require("../db");
 const verificarToken = require("../middlewares/verificarToken");
 const verificarRol = require("../middlewares/verificarRol");
@@ -17,7 +17,7 @@ router.get("/serie/:numeroSerie", async (req, res) => {
         estado_garantia,
         alerta_propiedad
       FROM productos
-      WHERE numero_serie = $1
+      WHERE UPPER(numero_serie) = UPPER($1)
       LIMIT 1`,
       [numeroSerie]
     );
@@ -215,3 +215,4 @@ router.post(
 );
 
 module.exports = router;
+

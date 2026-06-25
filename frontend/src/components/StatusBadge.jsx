@@ -1,4 +1,4 @@
-function normalizeStatus(value) {
+﻿function normalizeStatus(value) {
   return String(value || "")
     .trim()
     .toLowerCase()
@@ -9,7 +9,11 @@ function StatusBadge({ value, children }) {
   const label = children || value || "Sin estado";
   const statusClass = normalizeStatus(label);
 
-  return <span className={`status-badge status-${statusClass}`}>{label}</span>;
+  return (
+    <span className={`badge rounded-pill status-badge status-${statusClass}`}>
+      {label}
+    </span>
+  );
 }
 
 export default StatusBadge;

@@ -13,15 +13,15 @@ INSERT INTO sucursales (
   estado
 ) VALUES
   (
-    'Servicio Tecnico Temuco',
+    U&'Servicio T\00E9cnico Temuco',
     'Temuco',
-    'La Araucania',
+    U&'La Araucan\00EDa',
     'Av. Alemania 1234',
     15000,
     'ACTIVA'
   ),
   (
-    'Servicio Tecnico Santiago',
+    U&'Servicio T\00E9cnico Santiago',
     'Santiago',
     'Metropolitana',
     'Av. Providencia 2450',
@@ -29,10 +29,10 @@ INSERT INTO sucursales (
     'ACTIVA'
   ),
   (
-    'Servicio Tecnico Concepcion',
-    'Concepcion',
-    'Biobio',
-    'Av. Paicavi 880',
+    U&'Servicio T\00E9cnico Concepci\00F3n',
+    U&'Concepci\00F3n',
+    U&'Biob\00EDo',
+    U&'Av. Paicav\00ED 880',
     18000,
     'ACTIVA'
   );
@@ -66,7 +66,7 @@ SELECT
   s.id_sucursal,
   m.id_modelo,
   CASE s.nombre
-    WHEN 'Servicio Tecnico Temuco' THEN
+    WHEN U&'Servicio T\00E9cnico Temuco' THEN
       CASE m.codigo_comercial
         WHEN 'TF55FX' THEN 18000
         WHEN 'TF65' THEN 20000
@@ -80,7 +80,7 @@ SELECT
         WHEN 'FX-400' THEN 28000
         ELSE 15000
       END
-    WHEN 'Servicio Tecnico Santiago' THEN
+    WHEN U&'Servicio T\00E9cnico Santiago' THEN
       CASE m.codigo_comercial
         WHEN 'TF55FX' THEN 24000
         WHEN 'TF65' THEN 26000
@@ -94,7 +94,7 @@ SELECT
         WHEN 'FX-400' THEN 36000
         ELSE 25000
       END
-    WHEN 'Servicio Tecnico Concepcion' THEN
+    WHEN U&'Servicio T\00E9cnico Concepci\00F3n' THEN
       CASE m.codigo_comercial
         WHEN 'TF55FX' THEN 20000
         WHEN 'TF65' THEN 22000
@@ -111,9 +111,9 @@ SELECT
     ELSE 0
   END AS valor_revision,
   CASE s.nombre
-    WHEN 'Servicio Tecnico Temuco' THEN 22000
-    WHEN 'Servicio Tecnico Santiago' THEN 30000
-    WHEN 'Servicio Tecnico Concepcion' THEN 26000
+    WHEN U&'Servicio T\00E9cnico Temuco' THEN 22000
+    WHEN U&'Servicio T\00E9cnico Santiago' THEN 30000
+    WHEN U&'Servicio T\00E9cnico Concepci\00F3n' THEN 26000
     ELSE 0
   END AS valor_mano_obra,
   'ACTIVO'
@@ -122,19 +122,19 @@ CROSS JOIN productos_modelo m;
 
 INSERT INTO usuarios (nombre, email, password_hash, id_rol, id_sucursal, estado) VALUES
   (
-    'Administrador SerialCare',
+    'Administrador SerialCare Temuco',
     'admin@serialcare.cl',
     '$2b$10$.1cAA5VG3UX1/VTztx1OD./RqwrkJE5bj/NAh/FDJVAXOrO1pE58C',
     (SELECT id_rol FROM roles WHERE nombre_rol = 'ADMIN'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Temuco'),
     'ACTIVO'
   ),
   (
-    'Tecnico SerialCare',
+    'Tecnico SerialCare Temuco',
     'tecnico@serialcare.cl',
     '$2b$10$Vsv9JGhIyDWVy1ZezCmSU.X.apBoG8Gj/YFP61RDYTTN.zi8m3f0i',
     (SELECT id_rol FROM roles WHERE nombre_rol = 'TECNICO'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Temuco'),
     'ACTIVO'
   ),
   (
@@ -151,6 +151,54 @@ INSERT INTO usuarios (nombre, email, password_hash, id_rol, id_sucursal, estado)
     '$2b$10$BBbWAIDBJeVOy9jG2ha00.SPpwCsDkSz3Ka/ey.ExfCmZtjrVktqG',
     (SELECT id_rol FROM roles WHERE nombre_rol = 'MARCA'),
     NULL,
+    'ACTIVO'
+  ),
+  (
+    'Admin Sucursal Temuco',
+    'admin.temuco@serialcare.cl',
+    '$2b$10$.1cAA5VG3UX1/VTztx1OD./RqwrkJE5bj/NAh/FDJVAXOrO1pE58C',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'ADMIN'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Temuco'),
+    'ACTIVO'
+  ),
+  (
+    'Admin Sucursal Santiago',
+    'admin.santiago@serialcare.cl',
+    '$2b$10$.1cAA5VG3UX1/VTztx1OD./RqwrkJE5bj/NAh/FDJVAXOrO1pE58C',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'ADMIN'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Santiago'),
+    'ACTIVO'
+  ),
+  (
+    U&'Admin Sucursal Concepci\00F3n',
+    'admin.concepcion@serialcare.cl',
+    '$2b$10$.1cAA5VG3UX1/VTztx1OD./RqwrkJE5bj/NAh/FDJVAXOrO1pE58C',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'ADMIN'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Concepci\00F3n'),
+    'ACTIVO'
+  ),
+  (
+    U&'T\00E9cnico Sucursal Temuco',
+    'tecnico.temuco@serialcare.cl',
+    '$2b$10$Vsv9JGhIyDWVy1ZezCmSU.X.apBoG8Gj/YFP61RDYTTN.zi8m3f0i',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'TECNICO'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Temuco'),
+    'ACTIVO'
+  ),
+  (
+    U&'T\00E9cnico Sucursal Santiago',
+    'tecnico.santiago@serialcare.cl',
+    '$2b$10$Vsv9JGhIyDWVy1ZezCmSU.X.apBoG8Gj/YFP61RDYTTN.zi8m3f0i',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'TECNICO'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Santiago'),
+    'ACTIVO'
+  ),
+  (
+    U&'T\00E9cnico Sucursal Concepci\00F3n',
+    'tecnico.concepcion@serialcare.cl',
+    '$2b$10$Vsv9JGhIyDWVy1ZezCmSU.X.apBoG8Gj/YFP61RDYTTN.zi8m3f0i',
+    (SELECT id_rol FROM roles WHERE nombre_rol = 'TECNICO'),
+    (SELECT id_sucursal FROM sucursales WHERE nombre = U&'Servicio T\00E9cnico Concepci\00F3n'),
     'ACTIVO'
   );
 
@@ -236,6 +284,80 @@ INSERT INTO productos (
     FALSE
   );
 
+WITH ordenes_seed (
+  numero_serie,
+  tecnico_email,
+  sucursal_nombre,
+  tipo_orden,
+  diagnostico,
+  estado
+) AS (
+  VALUES
+    (
+      'SC-ACME-0001',
+      'tecnico.temuco@serialcare.cl',
+      U&'Servicio T\00E9cnico Temuco',
+      'REPARACION',
+      'Cliente reporta dificultad de partida en frio. Orden pendiente de primera revision.',
+      'PENDIENTE'
+    ),
+    (
+      'SC-HUSQ-0001',
+      'tecnico.temuco@serialcare.cl',
+      U&'Servicio T\00E9cnico Temuco',
+      'GARANTIA',
+      'Equipo ingresa por perdida de potencia. Tecnico revisa filtro, bujia y carburacion.',
+      'EN_DIAGNOSTICO'
+    ),
+    (
+      'SC-ACME-0002',
+      'tecnico@serialcare.cl',
+      U&'Servicio T\00E9cnico Temuco',
+      'GARANTIA',
+      'Compresor evaluado por solicitud de garantia fuera de periodo de cobertura.',
+      'CERRADA'
+    ),
+    (
+      'SC-HUSQ-0002',
+      'tecnico.santiago@serialcare.cl',
+      U&'Servicio T\00E9cnico Santiago',
+      'MANTENIMIENTO',
+      'Desbrozadora ingresa para mantencion preventiva y ajuste de carburacion.',
+      'EN_DIAGNOSTICO'
+    ),
+    (
+      'SC-MOTO-0001',
+      'tecnico.santiago@serialcare.cl',
+      U&'Servicio T\00E9cnico Santiago',
+      'GARANTIA',
+      'Producto con alerta de propiedad. Sucursal solicita revision documental.',
+      'PENDIENTE'
+    ),
+    (
+      'SC-DEF-0001',
+      'tecnico.concepcion@serialcare.cl',
+      U&'Servicio T\00E9cnico Concepci\00F3n',
+      'GARANTIA',
+      'Refrigerador revisado por falla de modulo de control. Caso aprobado por garantia.',
+      'REPARADA'
+    ),
+    (
+      'SC-DEF-0002',
+      'tecnico.concepcion@serialcare.cl',
+      U&'Servicio T\00E9cnico Concepci\00F3n',
+      'REPARACION',
+      'Lavadora reparada por reemplazo de bomba de drenaje y prueba de ciclo completo.',
+      'REPARADA'
+    ),
+    (
+      'SC-REFRI-0001',
+      'tecnico.concepcion@serialcare.cl',
+      U&'Servicio T\00E9cnico Concepci\00F3n',
+      'MANTENIMIENTO',
+      'Refrigerador cerrado luego de cambio de termostato y validacion de temperatura.',
+      'CERRADA'
+    )
+)
 INSERT INTO ordenes_servicio (
   id_producto,
   id_tecnico,
@@ -246,79 +368,188 @@ INSERT INTO ordenes_servicio (
   tipo_orden,
   diagnostico,
   estado
-) VALUES
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-ACME-0001'),
-    (SELECT id_usuario FROM usuarios WHERE email = 'tecnico@serialcare.cl'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT id_modelo FROM productos WHERE numero_serie = 'SC-ACME-0001'),
-    (SELECT costo_ingreso_taller FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT pms.valor_revision FROM precios_modelo_sucursal pms INNER JOIN productos p ON p.id_modelo = pms.id_modelo WHERE p.numero_serie = 'SC-ACME-0001' AND pms.id_sucursal = (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco')),
-    'REPARACION',
-    'Cliente reporta dificultad de partida en frio. Orden pendiente de primera revision.',
-    'PENDIENTE'
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-HUSQ-0001'),
-    (SELECT id_usuario FROM usuarios WHERE email = 'tecnico@serialcare.cl'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT id_modelo FROM productos WHERE numero_serie = 'SC-HUSQ-0001'),
-    (SELECT costo_ingreso_taller FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT pms.valor_revision FROM precios_modelo_sucursal pms INNER JOIN productos p ON p.id_modelo = pms.id_modelo WHERE p.numero_serie = 'SC-HUSQ-0001' AND pms.id_sucursal = (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco')),
-    'DIAGNOSTICO',
-    'Equipo ingresa por perdida de potencia. Tecnico revisa filtro, bujia y carburacion.',
-    'EN_DIAGNOSTICO'
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-DEF-0002'),
-    (SELECT id_usuario FROM usuarios WHERE email = 'tecnico@serialcare.cl'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT id_modelo FROM productos WHERE numero_serie = 'SC-DEF-0002'),
-    (SELECT costo_ingreso_taller FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT pms.valor_revision FROM precios_modelo_sucursal pms INNER JOIN productos p ON p.id_modelo = pms.id_modelo WHERE p.numero_serie = 'SC-DEF-0002' AND pms.id_sucursal = (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco')),
-    'REPARACION',
-    'Lavadora reparada por reemplazo de bomba de drenaje y prueba de ciclo completo.',
-    'REPARADA'
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-REFRI-0001'),
-    (SELECT id_usuario FROM usuarios WHERE email = 'tecnico@serialcare.cl'),
-    (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT id_modelo FROM productos WHERE numero_serie = 'SC-REFRI-0001'),
-    (SELECT costo_ingreso_taller FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco'),
-    (SELECT pms.valor_revision FROM precios_modelo_sucursal pms INNER JOIN productos p ON p.id_modelo = pms.id_modelo WHERE p.numero_serie = 'SC-REFRI-0001' AND pms.id_sucursal = (SELECT id_sucursal FROM sucursales WHERE nombre = 'Servicio Tecnico Temuco')),
-    'REPARACION',
-    'Refrigerador cerrado luego de cambio de termostato y validacion de temperatura.',
-    'CERRADA'
-  );
+)
+SELECT
+  p.id_producto,
+  u.id_usuario,
+  s.id_sucursal,
+  p.id_modelo,
+  s.costo_ingreso_taller,
+  pms.valor_revision,
+  os.tipo_orden,
+  os.diagnostico,
+  os.estado
+FROM ordenes_seed os
+INNER JOIN productos p ON p.numero_serie = os.numero_serie
+INNER JOIN usuarios u ON u.email = os.tecnico_email
+INNER JOIN sucursales s ON s.nombre = os.sucursal_nombre
+INNER JOIN precios_modelo_sucursal pms
+  ON pms.id_sucursal = s.id_sucursal
+  AND pms.id_modelo = p.id_modelo;
 
-INSERT INTO garantias (
-  id_producto,
+WITH repuestos_seed (
+  numero_serie,
+  sucursal_clave,
+  nombre_repuesto,
+  cantidad,
+  precio_unitario,
+  cubierto_garantia,
+  observacion
+) AS (
+  VALUES
+    (
+      'SC-HUSQ-0001',
+      'TEMUCO',
+      'Bujia NGK BPMR7A',
+      1,
+      4500,
+      TRUE,
+      'Repuesto sugerido para falla de encendido.'
+    ),
+    (
+      'SC-HUSQ-0001',
+      'TEMUCO',
+      'Filtro de aire motosierra 120',
+      1,
+      6900,
+      TRUE,
+      'Filtro contaminado durante diagnostico.'
+    ),
+    (
+      'SC-MOTO-0001',
+      'SANTIAGO',
+      'Kit empaquetadura carburador MT-150',
+      1,
+      12500,
+      FALSE,
+      'Pendiente de validacion por alerta de propiedad.'
+    ),
+    (
+      'SC-DEF-0001',
+      'CONCEPCION',
+      'Modulo de control DF-320',
+      1,
+      48000,
+      TRUE,
+      'Repuesto cubierto por garantia aprobada.'
+    ),
+    (
+      'SC-ACME-0002',
+      'TEMUCO',
+      'Presostato compresor CP-50',
+      1,
+      18000,
+      FALSE,
+      'No cubierto por garantia vencida.'
+    )
+)
+INSERT INTO repuestos_usados (
+  id_orden,
+  nombre_repuesto,
+  cantidad,
+  precio_unitario,
+  cubierto_garantia,
+  observacion
+)
+SELECT
+  o.id_orden,
+  rs.nombre_repuesto,
+  rs.cantidad,
+  rs.precio_unitario,
+  rs.cubierto_garantia,
+  rs.observacion
+FROM repuestos_seed rs
+INNER JOIN productos p ON p.numero_serie = rs.numero_serie
+INNER JOIN sucursales s ON (
+  (rs.sucursal_clave = 'TEMUCO' AND s.nombre LIKE 'Servicio T%Temuco') OR
+  (rs.sucursal_clave = 'SANTIAGO' AND s.nombre LIKE 'Servicio T%Santiago') OR
+  (rs.sucursal_clave = 'CONCEPCION' AND s.nombre LIKE 'Servicio T%Concepci%')
+)
+INNER JOIN ordenes_servicio o
+  ON o.id_producto = p.id_producto
+  AND o.id_sucursal = s.id_sucursal;
+
+WITH garantias_seed (
+  numero_serie,
+  sucursal_clave,
+  tecnico_email,
   estado,
   observacion,
+  observacion_marca,
+  fecha_solicitud,
   fecha_revision
-) VALUES
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-HUSQ-0001'),
-    'PENDIENTE',
-    'Solicitud recibida por falla intermitente de encendido. Pendiente de evaluacion tecnica.',
-    NULL
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-DEF-0001'),
-    'APROBADA',
-    'Garantia aprobada por defecto de fabrica en modulo de control.',
-    CURRENT_TIMESTAMP
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-ACME-0002'),
-    'RECHAZADA',
-    'Garantia rechazada por vencimiento del periodo de cobertura.',
-    CURRENT_TIMESTAMP
-  ),
-  (
-    (SELECT id_producto FROM productos WHERE numero_serie = 'SC-MOTO-0001'),
-    'EN_REVISION',
-    'Producto con alerta de propiedad. Marca debe validar documentacion antes de resolver.',
-    NULL
-  );
+) AS (
+  VALUES
+    (
+      'SC-ACME-0001',
+      'TEMUCO',
+      'tecnico.temuco@serialcare.cl',
+      'PENDIENTE',
+      'Sucursal Temuco solicita garantia por falla intermitente de partida reportada por cliente.',
+      NULL,
+      CURRENT_TIMESTAMP - INTERVAL '2 days',
+      NULL::TIMESTAMP
+    ),
+    (
+      'SC-MOTO-0001',
+      'SANTIAGO',
+      'tecnico.santiago@serialcare.cl',
+      'EN_REVISION',
+      'Sucursal Santiago solicita revision documental por producto con alerta de propiedad registrada.',
+      NULL,
+      CURRENT_TIMESTAMP - INTERVAL '1 day',
+      NULL::TIMESTAMP
+    ),
+    (
+      'SC-DEF-0001',
+      'CONCEPCION',
+      'tecnico.concepcion@serialcare.cl',
+      'APROBADA',
+      'Sucursal Concepcion solicita cobertura por falla de modulo de control.',
+      'Garantia aprobada por defecto de fabrica en modulo de control.',
+      CURRENT_TIMESTAMP - INTERVAL '5 days',
+      CURRENT_TIMESTAMP - INTERVAL '4 days'
+    ),
+    (
+      'SC-ACME-0002',
+      'TEMUCO',
+      'tecnico@serialcare.cl',
+      'RECHAZADA',
+      'Sucursal Temuco solicita cobertura para compresor evaluado fuera de periodo.',
+      'Garantia rechazada por vencimiento del periodo de cobertura.',
+      CURRENT_TIMESTAMP - INTERVAL '6 days',
+      CURRENT_TIMESTAMP - INTERVAL '5 days'
+    )
+)
+INSERT INTO garantias (
+  id_orden,
+  id_producto,
+  id_sucursal,
+  id_tecnico,
+  estado,
+  observacion,
+  observacion_marca,
+  fecha_solicitud,
+  fecha_revision
+)
+SELECT
+  o.id_orden,
+  p.id_producto,
+  s.id_sucursal,
+  COALESCE(u.id_usuario, o.id_tecnico),
+  gs.estado,
+  gs.observacion,
+  gs.observacion_marca,
+  gs.fecha_solicitud,
+  gs.fecha_revision
+FROM garantias_seed gs
+INNER JOIN productos p ON p.numero_serie = gs.numero_serie
+INNER JOIN sucursales s ON (
+  (gs.sucursal_clave = 'TEMUCO' AND s.nombre LIKE 'Servicio T%Temuco') OR
+  (gs.sucursal_clave = 'SANTIAGO' AND s.nombre LIKE 'Servicio T%Santiago') OR
+  (gs.sucursal_clave = 'CONCEPCION' AND s.nombre LIKE 'Servicio T%Concepci%')
+)
+INNER JOIN ordenes_servicio o
+  ON o.id_producto = p.id_producto
+  AND o.id_sucursal = s.id_sucursal
+LEFT JOIN usuarios u ON u.email = gs.tecnico_email;
