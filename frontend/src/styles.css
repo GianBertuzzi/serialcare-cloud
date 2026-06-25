@@ -383,3 +383,38 @@ tr:last-child td {
   cursor: wait;
   opacity: 0.68;
 }
+
+.table-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.approve-button,
+.reject-button {
+  min-height: 34px;
+  border-radius: 6px;
+  padding: 0 11px;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.approve-button {
+  border: 1px solid #23715e;
+  color: #ffffff;
+  background: #23715e;
+}
+
+.reject-button {
+  border: 1px solid #c85546;
+  color: #8c2d20;
+  background: #fff0ed;
+}
+
+.approve-button:disabled,
+.reject-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
