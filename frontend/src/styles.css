@@ -353,3 +353,33 @@ tr:last-child td {
     flex-direction: column;
   }
 }
+
+.table-subtext {
+  display: block;
+  margin-top: 4px;
+  color: #64737b;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.state-select {
+  min-width: 170px;
+  border: 1px solid #c9d5d1;
+  border-radius: 6px;
+  padding: 9px 10px;
+  color: #172026;
+  background: #ffffff;
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.state-select:focus {
+  border-color: #23715e;
+  outline: 3px solid rgba(35, 113, 94, 0.16);
+}
+
+.state-select:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
