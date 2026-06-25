@@ -36,21 +36,39 @@ router.get("/serie/:numeroSerie", async (req, res) => {
 router.get(
   "/",
   verificarToken,
-  verificarRol("ADMIN", "TECNICO", "MARCA"),
+  verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"),
   async (req, res) => {
+    const isCliente = req.usuario.rol === "CLIENTE";
+    const params = isCliente ? [req.usuario.id_usuario] : [];
+
     try {
       const result = await db.query(
         `SELECT
-          id_producto,
-          numero_serie,
-          marca,
-          modelo,
-          id_cliente,
-          estado_garantia,
-          alerta_propiedad,
-          fecha_registro
-        FROM productos
-        ORDER BY fecha_registro DESC`
+          p.id_producto,
+          p.numero_serie,
+          p.marca,
+          p.modelo,
+          p.id_cliente,
+          p.estado_garantia,
+          p.alerta_propiedad,
+          p.fecha_registro,
+          ultima_orden.id_orden AS id_ultima_orden,
+          ultima_orden.estado AS estado_reparacion,
+          ultima_orden.fecha_creacion AS fecha_ultima_orden
+        FROM productos p
+        LEFT JOIN LATERAL (
+          SELECT
+            os.id_orden,
+            os.estado,
+            os.fecha_creacion
+          FROM ordenes_servicio os
+          WHERE os.id_producto = p.id_producto
+          ORDER BY os.fecha_creacion DESC
+          LIMIT 1
+        ) ultima_orden ON TRUE
+        ${isCliente ? "WHERE p.id_cliente = $1" : ""}
+        ORDER BY p.fecha_registro DESC`,
+        params
       );
 
       return res.json({ productos: result.rows });
