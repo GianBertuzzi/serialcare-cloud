@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import AppLayout from "../components/AppLayout.jsx";
 import DataTable from "../components/DataTable.jsx";
+import OrdenDetalleModal from "../components/OrdenDetalleModal.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import api from "../services/api";
@@ -58,6 +59,7 @@ function MarcaDashboard() {
   const [isSucursalFormOpen, setIsSucursalFormOpen] = useState(false);
   const [sucursalForm, setSucursalForm] = useState(initialSucursalForm);
   const [detalleGarantia, setDetalleGarantia] = useState(null);
+  const [selectedDetailOrder, setSelectedDetailOrder] = useState(null);
 
   async function loadGarantias() {
     setIsLoadingGarantias(true);
@@ -250,6 +252,15 @@ function MarcaDashboard() {
       : [];
   }
 
+  function openGarantiaDetalle(garantia) {
+    setSelectedDetailOrder({
+      id_orden: garantia.id_orden,
+      numero_serie: garantia.numero_serie,
+      marca: garantia.marca,
+      modelo: garantia.modelo
+    });
+  }
+
   const sucursalColumns = [
     { key: "nombre", label: "Nombre", searchValue: (sucursal) => sucursal.nombre },
     {
@@ -353,7 +364,7 @@ function MarcaDashboard() {
       render: (garantia) => `#${garantia.id_orden || "-"}`
     },
     {
-      key: "numero_serie",
+      key: "producto",
       label: "Producto",
       searchValue: (garantia) => `${garantia.numero_serie || ""} ${garantia.marca || ""} ${garantia.modelo || ""}`,
       render: (garantia) => (
@@ -366,59 +377,17 @@ function MarcaDashboard() {
       )
     },
     {
-      key: "tecnico",
-      label: "Tecnico",
-      searchValue: (garantia) => `${garantia.tecnico || ""} ${garantia.tecnico_email || ""}`,
-      render: (garantia) => (
-        <>
-          {garantia.tecnico || "Sin tecnico"}
-          {garantia.tecnico_email ? <span className="table-subtext">{garantia.tecnico_email}</span> : null}
-        </>
-      )
-    },
-    {
-      key: "diagnostico",
-      label: "Diagnostico",
-      searchValue: (garantia) => garantia.diagnostico || "Sin diagnostico",
-      render: (garantia) => garantia.diagnostico || "Sin diagnostico"
-    },
-    {
       key: "estado",
       label: "Estado",
       searchValue: (garantia) => garantia.estado,
       render: (garantia) => <StatusBadge value={garantia.estado} />
     },
     {
-      key: "repuestos_usados",
-      label: "Repuestos",
-      searchValue: (garantia) => getGarantiaRepuestos(garantia).map((repuesto) => repuesto.nombre_repuesto).join(" "),
-      sortable: false,
-      render: (garantia) => {
-        const repuestos = getGarantiaRepuestos(garantia);
-
-        return (
-          <div className="table-actions">
-            <span className="table-subtext mb-0">{repuestos.length} registrados</span>
-            <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => setDetalleGarantia(garantia)}>
-              Ver detalle
-            </button>
-          </div>
-        );
-      }
-    },
-    {
       key: "fecha_solicitud",
-      label: "Solicitud",
+      label: "Fecha solicitud",
       searchValue: (garantia) => formatDate(garantia.fecha_solicitud),
       sortValue: (garantia) => garantia.fecha_solicitud,
       render: (garantia) => formatDate(garantia.fecha_solicitud)
-    },
-    {
-      key: "fecha_revision",
-      label: "Revision marca",
-      searchValue: (garantia) => formatDate(garantia.fecha_revision),
-      sortValue: (garantia) => garantia.fecha_revision,
-      render: (garantia) => formatDate(garantia.fecha_revision)
     },
     {
       key: "acciones",
@@ -427,6 +396,9 @@ function MarcaDashboard() {
       sortable: false,
       render: (garantia) => (
         <div className="table-actions">
+          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openGarantiaDetalle(garantia)}>
+            Ver detalle
+          </button>
           <button className="btn btn-success btn-sm" type="button" disabled={updatingId === garantia.id_garantia} onClick={() => updateGarantia(garantia.id_garantia, "aprobar")}>
             Aprobar
           </button>
@@ -547,74 +519,13 @@ function MarcaDashboard() {
         initialSortKey="nombre_sucursal"
       />
 
-      {detalleGarantia ? (
-        <section className="card surface-card border-0 shadow-sm warranty-detail-section mb-4">
-          <div className="card-header bg-white border-0 d-flex flex-wrap justify-content-between gap-3">
-            <div>
-              <p className="eyebrow mb-1">Garantia #{detalleGarantia.id_garantia}</p>
-              <h2 className="h5 mb-0">Detalle de solicitud</h2>
-              <span className="table-subtext">
-                Orden #{detalleGarantia.id_orden} - {detalleGarantia.nombre_sucursal || "Sin sucursal"}
-              </span>
-            </div>
-            <button className="btn btn-outline-secondary btn-sm" type="button" onClick={() => setDetalleGarantia(null)}>
-              Cerrar detalle
-            </button>
-          </div>
-          <div className="card-body">
-            <div className="row g-3 mb-3">
-              <div className="col-md-4">
-                <span className="detail-label">Producto</span>
-                <strong className="d-block">{detalleGarantia.numero_serie || "Sin serie"}</strong>
-                <span className="table-subtext">{[detalleGarantia.marca, detalleGarantia.modelo].filter(Boolean).join(" - ")}</span>
-              </div>
-              <div className="col-md-4">
-                <span className="detail-label">Tecnico</span>
-                <strong className="d-block">{detalleGarantia.tecnico || "Sin tecnico"}</strong>
-                <span className="table-subtext">{detalleGarantia.tecnico_email || "Sin correo"}</span>
-              </div>
-              <div className="col-md-4">
-                <span className="detail-label">Estado</span>
-                <div><StatusBadge value={detalleGarantia.estado} /></div>
-              </div>
-            </div>
-
-            <p className="mb-2"><strong>Diagnostico:</strong> {detalleGarantia.diagnostico || "Sin diagnostico"}</p>
-            <p className="mb-2"><strong>Solicitud sucursal:</strong> {detalleGarantia.observacion || "Sin observacion"}</p>
-            {detalleGarantia.observacion_marca ? (
-              <p className="mb-3"><strong>Respuesta marca:</strong> {detalleGarantia.observacion_marca}</p>
-            ) : null}
-
-            {getGarantiaRepuestos(detalleGarantia).length > 0 ? (
-              <div className="table-responsive">
-                <table className="table table-sm align-middle serial-table mb-0">
-                  <thead>
-                    <tr>
-                      <th>Repuesto</th>
-                      <th>Cantidad</th>
-                      <th>Precio unitario</th>
-                      <th>Cubierto</th>
-                      <th>Observacion</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {getGarantiaRepuestos(detalleGarantia).map((repuesto) => (
-                      <tr key={repuesto.id_repuesto_usado}>
-                        <td>{repuesto.nombre_repuesto}</td>
-                        <td>{repuesto.cantidad}</td>
-                        <td>{formatCurrency(repuesto.precio_unitario)}</td>
-                        <td>{repuesto.cubierto_garantia ? "Si" : "No"}</td>
-                        <td>{repuesto.observacion || "Sin observacion"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <p className="empty-state mb-0">No hay repuestos registrados para esta orden.</p>
-            )}
-          </div>
-        </section>
+      {selectedDetailOrder ? (
+        <OrdenDetalleModal
+          orden={selectedDetailOrder}
+          readOnly
+          onClose={() => setSelectedDetailOrder(null)}
+          onUpdated={loadGarantias}
+        />
       ) : null}
       <DataTable
         sectionId="garantias"

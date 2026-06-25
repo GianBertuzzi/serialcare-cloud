@@ -469,6 +469,87 @@ INNER JOIN ordenes_servicio o
   ON o.id_producto = p.id_producto
   AND o.id_sucursal = s.id_sucursal;
 
+
+WITH cotizaciones_seed (
+  numero_serie,
+  sucursal_clave,
+  mano_obra,
+  estado,
+  observacion
+) AS (
+  VALUES
+    ('SC-HUSQ-0001', 'TEMUCO', 22000, 'ENVIADA', 'Cotizacion por limpieza de carburador y repuestos menores.'),
+    ('SC-MOTO-0001', 'SANTIAGO', 30000, 'BORRADOR', 'Cotizacion preliminar pendiente de revision documental.'),
+    ('SC-DEF-0001', 'CONCEPCION', 26000, 'APROBADA', 'Mano de obra cubierta por garantia de modulo de control.'),
+    ('SC-ACME-0002', 'TEMUCO', 24000, 'RECHAZADA', 'Cliente rechaza reparacion fuera de garantia.')
+)
+INSERT INTO cotizaciones (
+  id_orden,
+  mano_obra,
+  total_repuestos,
+  total,
+  estado,
+  observacion,
+  fecha_respuesta
+)
+SELECT
+  o.id_orden,
+  cs.mano_obra,
+  COALESCE(SUM(ru.cantidad * ru.precio_unitario), 0) AS total_repuestos,
+  cs.mano_obra + COALESCE(SUM(ru.cantidad * ru.precio_unitario), 0) AS total,
+  cs.estado,
+  cs.observacion,
+  CASE WHEN cs.estado IN ('APROBADA', 'RECHAZADA') THEN CURRENT_TIMESTAMP - INTERVAL '1 day' ELSE NULL END
+FROM cotizaciones_seed cs
+INNER JOIN productos p ON p.numero_serie = cs.numero_serie
+INNER JOIN sucursales s ON (
+  (cs.sucursal_clave = 'TEMUCO' AND s.nombre LIKE 'Servicio T%Temuco') OR
+  (cs.sucursal_clave = 'SANTIAGO' AND s.nombre LIKE 'Servicio T%Santiago') OR
+  (cs.sucursal_clave = 'CONCEPCION' AND s.nombre LIKE 'Servicio T%Concepci%')
+)
+INNER JOIN ordenes_servicio o
+  ON o.id_producto = p.id_producto
+  AND o.id_sucursal = s.id_sucursal
+LEFT JOIN repuestos_usados ru ON ru.id_orden = o.id_orden
+GROUP BY o.id_orden, cs.mano_obra, cs.estado, cs.observacion;
+
+WITH evidencias_seed (
+  numero_serie,
+  sucursal_clave,
+  tipo,
+  nombre_archivo,
+  url_archivo,
+  descripcion
+) AS (
+  VALUES
+    ('SC-HUSQ-0001', 'TEMUCO', 'IMAGEN', 'husq-0001-carburador.jpg', 'https://demo.serialcare.local/evidencias/husq-0001-carburador.jpg', 'Foto de carburador antes de limpieza.'),
+    ('SC-HUSQ-0001', 'TEMUCO', 'DOCUMENTO', 'husq-0001-ingreso.txt', 'https://demo.serialcare.local/evidencias/husq-0001-ingreso.txt', 'Registro simulado de ingreso a taller.'),
+    ('SC-MOTO-0001', 'SANTIAGO', 'PDF', 'moto-0001-documentos.pdf', 'https://demo.serialcare.local/evidencias/moto-0001-documentos.pdf', 'Documento simulado para validar alerta de propiedad.'),
+    ('SC-DEF-0001', 'CONCEPCION', 'IMAGEN', 'def-0001-modulo.jpg', 'https://demo.serialcare.local/evidencias/def-0001-modulo.jpg', 'Evidencia de modulo de control reemplazado.')
+)
+INSERT INTO evidencias_orden (
+  id_orden,
+  tipo,
+  nombre_archivo,
+  url_archivo,
+  descripcion
+)
+SELECT
+  o.id_orden,
+  es.tipo,
+  es.nombre_archivo,
+  es.url_archivo,
+  es.descripcion
+FROM evidencias_seed es
+INNER JOIN productos p ON p.numero_serie = es.numero_serie
+INNER JOIN sucursales s ON (
+  (es.sucursal_clave = 'TEMUCO' AND s.nombre LIKE 'Servicio T%Temuco') OR
+  (es.sucursal_clave = 'SANTIAGO' AND s.nombre LIKE 'Servicio T%Santiago') OR
+  (es.sucursal_clave = 'CONCEPCION' AND s.nombre LIKE 'Servicio T%Concepci%')
+)
+INNER JOIN ordenes_servicio o
+  ON o.id_producto = p.id_producto
+  AND o.id_sucursal = s.id_sucursal;
 WITH garantias_seed (
   numero_serie,
   sucursal_clave,

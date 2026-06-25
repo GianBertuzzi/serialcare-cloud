@@ -1,4 +1,6 @@
 DROP TABLE IF EXISTS garantias CASCADE;
+DROP TABLE IF EXISTS evidencias_orden CASCADE;
+DROP TABLE IF EXISTS cotizaciones CASCADE;
 DROP TABLE IF EXISTS repuestos_usados CASCADE;
 DROP TABLE IF EXISTS ordenes_servicio CASCADE;
 DROP TABLE IF EXISTS productos CASCADE;
@@ -91,6 +93,29 @@ CREATE TABLE repuestos_usados (
   fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+
+CREATE TABLE cotizaciones (
+  id_cotizacion SERIAL PRIMARY KEY,
+  id_orden INTEGER NOT NULL REFERENCES ordenes_servicio(id_orden) ON DELETE CASCADE,
+  mano_obra INTEGER NOT NULL DEFAULT 0,
+  total_repuestos INTEGER NOT NULL DEFAULT 0,
+  total INTEGER NOT NULL DEFAULT 0,
+  estado VARCHAR(30) DEFAULT 'BORRADOR',
+  observacion VARCHAR(300),
+  fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  fecha_respuesta TIMESTAMP NULL,
+  UNIQUE (id_orden)
+);
+
+CREATE TABLE evidencias_orden (
+  id_evidencia SERIAL PRIMARY KEY,
+  id_orden INTEGER NOT NULL REFERENCES ordenes_servicio(id_orden) ON DELETE CASCADE,
+  tipo VARCHAR(30) NOT NULL,
+  nombre_archivo VARCHAR(160) NOT NULL,
+  url_archivo VARCHAR(300),
+  descripcion VARCHAR(200),
+  fecha_subida TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE garantias (
   id_garantia SERIAL PRIMARY KEY,
   id_orden INTEGER NOT NULL REFERENCES ordenes_servicio(id_orden) ON DELETE CASCADE,
@@ -114,6 +139,8 @@ CREATE INDEX idx_ordenes_servicio_id_producto ON ordenes_servicio(id_producto);
 CREATE INDEX idx_ordenes_servicio_id_sucursal ON ordenes_servicio(id_sucursal);
 CREATE INDEX idx_ordenes_servicio_id_modelo ON ordenes_servicio(id_modelo);
 CREATE INDEX idx_repuestos_usados_id_orden ON repuestos_usados(id_orden);
+CREATE INDEX idx_cotizaciones_id_orden ON cotizaciones(id_orden);
+CREATE INDEX idx_evidencias_orden_id_orden ON evidencias_orden(id_orden);
 CREATE INDEX idx_garantias_id_orden ON garantias(id_orden);
 CREATE INDEX idx_garantias_id_producto ON garantias(id_producto);
 CREATE INDEX idx_garantias_id_sucursal ON garantias(id_sucursal);

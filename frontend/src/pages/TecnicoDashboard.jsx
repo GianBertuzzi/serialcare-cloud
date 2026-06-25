@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import AppLayout from "../components/AppLayout.jsx";
 import DataTable from "../components/DataTable.jsx";
 import NewOrderForm from "../components/NewOrderForm.jsx";
-import OrderActionPanel from "../components/OrderActionPanel.jsx";
+import OrdenDetalleModal from "../components/OrdenDetalleModal.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import api from "../services/api";
@@ -36,12 +36,14 @@ function formatCurrency(value) {
 
 function TecnicoDashboard() {
   const [ordenes, setOrdenes] = useState([]);
+  const [garantias, setGarantias] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingGarantias, setIsLoadingGarantias] = useState(true);
   const [error, setError] = useState("");
+  const [garantiasError, setGarantiasError] = useState("");
   const [orderSuccess, setOrderSuccess] = useState("");
   const [isOrderFormOpen, setIsOrderFormOpen] = useState(false);
-  const [activeOrderAction, setActiveOrderAction] = useState(null);
-  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [selectedDetailOrder, setSelectedDetailOrder] = useState(null);
   const [updatingId, setUpdatingId] = useState(null);
 
   async function loadOrdenes() {
@@ -61,8 +63,26 @@ function TecnicoDashboard() {
     }
   }
 
+  async function loadGarantias() {
+    setIsLoadingGarantias(true);
+    setGarantiasError("");
+
+    try {
+      const response = await api.get("/garantias");
+      setGarantias(response.data.garantias || []);
+    } catch (requestError) {
+      setGarantiasError(
+        requestError.response?.data?.error ||
+          "No se pudieron cargar las solicitudes de garantia."
+      );
+    } finally {
+      setIsLoadingGarantias(false);
+    }
+  }
+
   useEffect(() => {
     loadOrdenes();
+    loadGarantias();
   }, []);
 
   function openOrderForm() {
@@ -79,24 +99,23 @@ function TecnicoDashboard() {
     setOrderSuccess("Orden creada correctamente.");
     await loadOrdenes();
   }
-
-  function openOrderAction(orden, action) {
+  function openOrderDetail(orden) {
     setOrderSuccess("");
-    setSelectedOrder(orden);
-    setActiveOrderAction(action);
+    setSelectedDetailOrder(orden);
   }
 
-  function closeOrderAction() {
-    setSelectedOrder(null);
-    setActiveOrderAction(null);
+  function closeOrderDetail() {
+    setSelectedDetailOrder(null);
   }
 
-  async function handleOrderActionSaved(message) {
-    closeOrderAction();
-    setOrderSuccess(message);
+  async function handleOrderDetailUpdated(message) {
+    if (message) {
+      setOrderSuccess(message);
+    }
+
     await loadOrdenes();
+    await loadGarantias();
   }
-
   async function handleEstadoChange(idOrden, estado) {
     setUpdatingId(idOrden);
     setError("");
@@ -127,29 +146,17 @@ function TecnicoDashboard() {
     {
       key: "numero_serie",
       label: "Numero de serie",
-      searchValue: (orden) =>
-        `${orden.numero_serie || ""} ${orden.marca || ""} ${orden.modelo || ""} ${orden.descripcion_modelo || ""}`,
-      render: (orden) => (
-        <>
-          <strong>{orden.numero_serie || "Sin serie"}</strong>
-          {orden.marca || orden.modelo ? (
-            <span className="table-subtext">
-              {[orden.marca, orden.modelo].filter(Boolean).join(" - ")}
-            </span>
-          ) : null}
-        </>
-      )
+      searchValue: (orden) => orden.numero_serie || "Sin serie",
+      render: (orden) => <strong>{orden.numero_serie || "Sin serie"}</strong>
     },
     {
-      key: "nombre_sucursal",
-      label: "Sucursal",
-      searchValue: (orden) => orden.nombre_sucursal || "Sin sucursal",
+      key: "producto",
+      label: "Producto / modelo",
+      searchValue: (orden) => `${orden.marca || ""} ${orden.modelo || ""} ${orden.descripcion_modelo || ""}`,
       render: (orden) => (
         <>
-          {orden.nombre_sucursal || "Sin sucursal"}
-          <span className="table-subtext">
-            Ingreso {formatCurrency(orden.costo_ingreso_taller)} - Revision {formatCurrency(orden.valor_revision)}
-          </span>
+          {[orden.marca, orden.modelo].filter(Boolean).join(" - ") || "Sin producto"}
+          {orden.descripcion_modelo ? <span className="table-subtext">{orden.descripcion_modelo}</span> : null}
         </>
       )
     },
@@ -160,36 +167,10 @@ function TecnicoDashboard() {
       render: (orden) => orden.tipo_orden || "Sin tipo"
     },
     {
-      key: "diagnostico",
-      label: "Diagnostico",
-      searchValue: (orden) => orden.diagnostico || "Sin diagnostico",
-      render: (orden) => orden.diagnostico || "Sin diagnostico"
-    },
-    {
       key: "estado",
       label: "Estado",
       searchValue: (orden) => orden.estado,
       render: (orden) => <StatusBadge value={orden.estado} />
-    },
-    {
-      key: "cambiar_estado",
-      label: "Cambiar estado",
-      searchable: false,
-      sortable: false,
-      render: (orden) => (
-        <select
-          className="form-select form-select-sm state-select"
-          value={orden.estado}
-          disabled={updatingId === orden.id_orden}
-          onChange={(event) => handleEstadoChange(orden.id_orden, event.target.value)}
-        >
-          {ESTADOS_ORDEN.map((estado) => (
-            <option key={estado} value={estado}>
-              {estado}
-            </option>
-          ))}
-        </select>
-      )
     },
     {
       key: "fecha_creacion",
@@ -204,18 +185,80 @@ function TecnicoDashboard() {
       searchable: false,
       sortable: false,
       render: (orden) => (
-        <div className="table-actions">
-          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openOrderAction(orden, "repuesto")}>
-            Agregar repuesto
+        <div className="table-actions action-stack">
+          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openOrderDetail(orden)}>
+            Especificaciones
           </button>
-          <button className="btn btn-outline-success btn-sm" type="button" onClick={() => openOrderAction(orden, "garantia")}>
-            Solicitar garantia
-          </button>
+          <select
+            className="form-select form-select-sm state-select"
+            value={orden.estado}
+            disabled={updatingId === orden.id_orden}
+            onChange={(event) => handleEstadoChange(orden.id_orden, event.target.value)}
+          >
+            {ESTADOS_ORDEN.map((estado) => (
+              <option key={estado} value={estado}>{estado}</option>
+            ))}
+          </select>
         </div>
       )
     }
   ];
 
+  const garantiaColumns = [
+    {
+      key: "id_garantia",
+      label: "ID",
+      searchValue: (garantia) => garantia.id_garantia,
+      sortValue: (garantia) => Number(garantia.id_garantia || 0)
+    },
+    {
+      key: "id_orden",
+      label: "Orden",
+      searchValue: (garantia) => garantia.id_orden,
+      sortValue: (garantia) => Number(garantia.id_orden || 0),
+      render: (garantia) => `#${garantia.id_orden || "-"}`
+    },
+    {
+      key: "numero_serie",
+      label: "Producto",
+      searchValue: (garantia) => `${garantia.numero_serie || ""} ${garantia.marca || ""} ${garantia.modelo || ""}`,
+      render: (garantia) => (
+        <>
+          <strong>{garantia.numero_serie || "Sin serie"}</strong>
+          <span className="table-subtext">
+            {[garantia.marca, garantia.modelo].filter(Boolean).join(" - ") || "Sin producto"}
+          </span>
+        </>
+      )
+    },
+    {
+      key: "estado",
+      label: "Estado",
+      searchValue: (garantia) => garantia.estado,
+      render: (garantia) => <StatusBadge value={garantia.estado} />
+    },
+    {
+      key: "observacion",
+      label: "Observacion sucursal",
+      searchValue: (garantia) => garantia.observacion || "Sin observacion",
+      sortable: false,
+      render: (garantia) => garantia.observacion || "Sin observacion"
+    },
+    {
+      key: "observacion_marca",
+      label: "Respuesta marca",
+      searchValue: (garantia) => garantia.observacion_marca || "Sin respuesta",
+      sortable: false,
+      render: (garantia) => garantia.observacion_marca || "Sin respuesta"
+    },
+    {
+      key: "fecha_solicitud",
+      label: "Fecha solicitud",
+      searchValue: (garantia) => formatDate(garantia.fecha_solicitud),
+      sortValue: (garantia) => garantia.fecha_solicitud,
+      render: (garantia) => formatDate(garantia.fecha_solicitud)
+    }
+  ];
   return (
     <AppLayout title="Panel tecnico" eyebrow="TECNICO">
       <section id="dashboard" className="row g-3 mb-4">
@@ -236,12 +279,11 @@ function TecnicoDashboard() {
         <NewOrderForm onCancel={closeOrderForm} onCreated={handleOrderCreated} />
       ) : null}
 
-      {activeOrderAction ? (
-        <OrderActionPanel
-          orden={selectedOrder}
-          type={activeOrderAction}
-          onCancel={closeOrderAction}
-          onSaved={handleOrderActionSaved}
+      {selectedDetailOrder ? (
+        <OrdenDetalleModal
+          orden={selectedDetailOrder}
+          onClose={closeOrderDetail}
+          onUpdated={handleOrderDetailUpdated}
         />
       ) : null}
 
@@ -252,7 +294,7 @@ function TecnicoDashboard() {
         rows={ordenes}
         columns={ordenColumns}
         getRowKey={(orden) => orden.id_orden}
-        searchPlaceholder="Buscar por serie, modelo, diagnostico o estado"
+        searchPlaceholder="Buscar por ID, serie, producto, tipo o estado"
         emptyMessage="No hay ordenes de servicio registradas."
         loading={isLoading}
         loadingMessage="Cargando ordenes..."
@@ -263,6 +305,21 @@ function TecnicoDashboard() {
           className: isOrderFormOpen ? "btn btn-outline-secondary" : "btn btn-primary",
           onClick: isOrderFormOpen ? closeOrderForm : openOrderForm
         }}
+      />
+
+      <DataTable
+        sectionId="garantias"
+        eyebrow="Garantias"
+        title="Solicitudes de garantia"
+        rows={garantias}
+        columns={garantiaColumns}
+        getRowKey={(garantia) => garantia.id_garantia}
+        searchPlaceholder="Buscar por orden, serie, producto, estado u observacion"
+        emptyMessage="No hay solicitudes de garantia registradas."
+        loading={isLoadingGarantias}
+        loadingMessage="Cargando solicitudes..."
+        error={garantiasError}
+        initialSortKey="id_garantia"
       />
     </AppLayout>
   );

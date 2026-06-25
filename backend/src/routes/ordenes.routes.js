@@ -12,20 +12,34 @@ const TIPOS_ORDEN = [
   "PUESTA_EN_MARCHA"
 ];
 
+const TIPOS_EVIDENCIA = ["IMAGEN", "PDF", "DOCUMENTO"];
+
 const ORDEN_SELECT = `SELECT
   o.id_orden,
   o.id_producto,
   p.numero_serie,
   p.marca,
   p.modelo,
+  p.estado_garantia,
+  p.alerta_propiedad,
+  p.fecha_registro AS fecha_registro_producto,
+  p.id_cliente,
+  c.nombre AS cliente_nombre,
+  c.email AS cliente_email,
   o.id_modelo,
   pm.codigo_comercial,
   pm.descripcion AS descripcion_modelo,
+  pm.familia AS familia_modelo,
+  pm.marca AS marca_modelo,
+  pm.certificado AS modelo_certificado,
   o.id_tecnico,
   u.nombre AS tecnico_nombre,
   u.email AS tecnico_email,
   o.id_sucursal,
   s.nombre AS nombre_sucursal,
+  s.ciudad AS ciudad_sucursal,
+  s.region AS region_sucursal,
+  s.direccion AS direccion_sucursal,
   o.costo_ingreso_taller,
   o.valor_revision,
   o.tipo_orden,
@@ -36,6 +50,7 @@ FROM ordenes_servicio o
 INNER JOIN productos p ON p.id_producto = o.id_producto
 LEFT JOIN productos_modelo pm ON pm.id_modelo = o.id_modelo
 LEFT JOIN usuarios u ON u.id_usuario = o.id_tecnico
+LEFT JOIN usuarios c ON c.id_usuario = p.id_cliente
 LEFT JOIN sucursales s ON s.id_sucursal = o.id_sucursal`;
 
 const GARANTIA_DETALLE_SELECT = `SELECT
@@ -115,7 +130,7 @@ async function getGarantiaDetalle(idGarantia) {
   return result.rows[0] || null;
 }
 
-async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false) {
+async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false, allowCliente = false) {
   const orden = await getOrdenDetalle(idOrden);
 
   if (!orden) {
@@ -123,6 +138,14 @@ async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false) {
   }
 
   if (usuario.rol === "MARCA" && allowMarca) {
+    return { orden, usuarioSucursal: null };
+  }
+
+  if (usuario.rol === "CLIENTE" && allowCliente) {
+    if (Number(orden.id_cliente) !== Number(usuario.id_usuario)) {
+      return { status: 404, error: "Orden no encontrada para el cliente" };
+    }
+
     return { orden, usuarioSucursal: null };
   }
 
@@ -167,6 +190,133 @@ function parseMoney(value, defaultValue = 0) {
   }
 
   return Math.round(numberValue);
+}
+
+async function getRepuestos(idOrden) {
+  const result = await db.query(
+    `SELECT
+      id_repuesto_usado,
+      id_orden,
+      nombre_repuesto,
+      cantidad,
+      precio_unitario,
+      cubierto_garantia,
+      observacion,
+      fecha_registro
+    FROM repuestos_usados
+    WHERE id_orden = $1
+    ORDER BY fecha_registro DESC, id_repuesto_usado DESC`,
+    [idOrden]
+  );
+
+  return result.rows;
+}
+
+async function getCotizacion(idOrden) {
+  const result = await db.query(
+    `SELECT
+      id_cotizacion,
+      id_orden,
+      mano_obra,
+      total_repuestos,
+      total,
+      estado,
+      observacion,
+      fecha_creacion,
+      fecha_respuesta
+    FROM cotizaciones
+    WHERE id_orden = $1
+    LIMIT 1`,
+    [idOrden]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function getEvidencias(idOrden) {
+  const result = await db.query(
+    `SELECT
+      id_evidencia,
+      id_orden,
+      tipo,
+      nombre_archivo,
+      url_archivo,
+      descripcion,
+      fecha_subida
+    FROM evidencias_orden
+    WHERE id_orden = $1
+    ORDER BY fecha_subida DESC, id_evidencia DESC`,
+    [idOrden]
+  );
+
+  return result.rows;
+}
+
+async function getGarantiaPorOrden(idOrden) {
+  const result = await db.query(
+    `${GARANTIA_DETALLE_SELECT}
+    WHERE g.id_orden = $1
+    ORDER BY g.fecha_solicitud DESC, g.id_garantia DESC
+    LIMIT 1`,
+    [idOrden]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function buildOrdenDetalle(orden) {
+  const [repuestos, cotizacion, garantia, evidencias] = await Promise.all([
+    getRepuestos(orden.id_orden),
+    getCotizacion(orden.id_orden),
+    getGarantiaPorOrden(orden.id_orden),
+    getEvidencias(orden.id_orden)
+  ]);
+
+  return {
+    orden,
+    producto: {
+      id_producto: orden.id_producto,
+      numero_serie: orden.numero_serie,
+      marca: orden.marca,
+      modelo: orden.modelo,
+      estado_garantia: orden.estado_garantia,
+      alerta_propiedad: orden.alerta_propiedad,
+      fecha_registro: orden.fecha_registro_producto
+    },
+    modelo: {
+      id_modelo: orden.id_modelo,
+      codigo_comercial: orden.codigo_comercial,
+      descripcion: orden.descripcion_modelo,
+      familia: orden.familia_modelo,
+      marca: orden.marca_modelo,
+      certificado: orden.modelo_certificado
+    },
+    sucursal: {
+      id_sucursal: orden.id_sucursal,
+      nombre: orden.nombre_sucursal,
+      ciudad: orden.ciudad_sucursal,
+      region: orden.region_sucursal,
+      direccion: orden.direccion_sucursal
+    },
+    cliente: orden.id_cliente
+      ? {
+          id_cliente: orden.id_cliente,
+          nombre: orden.cliente_nombre,
+          email: orden.cliente_email
+        }
+      : null,
+    tecnico: orden.id_tecnico
+      ? {
+          id_tecnico: orden.id_tecnico,
+          nombre: orden.tecnico_nombre,
+          email: orden.tecnico_email
+        }
+      : null,
+    repuestos,
+    cotizacion,
+    garantia,
+    evidencias
+  };
 }
 
 router.get(
@@ -334,6 +484,31 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
 });
 
 router.get(
+  "/:id/detalle",
+  verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"),
+  async (req, res) => {
+    try {
+      const access = await getOrdenParaUsuario(
+        req.params.id,
+        req.usuario,
+        true,
+        true
+      );
+
+      if (access.error) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const detalle = await buildOrdenDetalle(access.orden);
+      return res.json({ detalle });
+    } catch (error) {
+      console.error("Error obteniendo detalle de orden:", error);
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+  }
+);
+
+router.get(
   "/:id/repuestos",
   verificarRol("ADMIN", "TECNICO", "MARCA"),
   async (req, res) => {
@@ -348,23 +523,8 @@ router.get(
         return res.status(access.status).json({ error: access.error });
       }
 
-      const result = await db.query(
-        `SELECT
-          id_repuesto_usado,
-          id_orden,
-          nombre_repuesto,
-          cantidad,
-          precio_unitario,
-          cubierto_garantia,
-          observacion,
-          fecha_registro
-        FROM repuestos_usados
-        WHERE id_orden = $1
-        ORDER BY fecha_registro DESC, id_repuesto_usado DESC`,
-        [access.orden.id_orden]
-      );
-
-      return res.json({ repuestos: result.rows });
+      const repuestos = await getRepuestos(access.orden.id_orden);
+      return res.json({ repuestos });
     } catch (error) {
       console.error("Error listando repuestos de orden:", error);
       return res.status(500).json({ error: "Error interno del servidor" });
@@ -453,6 +613,187 @@ router.post(
   }
 );
 
+router.get(
+  "/:id/cotizacion",
+  verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"),
+  async (req, res) => {
+    try {
+      const access = await getOrdenParaUsuario(
+        req.params.id,
+        req.usuario,
+        true,
+        true
+      );
+
+      if (access.error) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const cotizacion = await getCotizacion(access.orden.id_orden);
+      return res.json({ cotizacion });
+    } catch (error) {
+      console.error("Error obteniendo cotizacion:", error);
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+  }
+);
+
+router.post(
+  "/:id/cotizacion",
+  verificarRol("ADMIN", "TECNICO"),
+  async (req, res) => {
+    const manoObra = parseMoney(req.body?.mano_obra, 0);
+    const observacion =
+      typeof req.body?.observacion === "string" ? req.body.observacion.trim() : "";
+    const estado =
+      typeof req.body?.estado === "string" && req.body.estado.trim()
+        ? req.body.estado.trim().toUpperCase()
+        : "BORRADOR";
+
+    if (manoObra === null) {
+      return res.status(400).json({
+        error: "mano_obra debe ser un numero mayor o igual a 0"
+      });
+    }
+
+    if (!["BORRADOR", "ENVIADA", "APROBADA", "RECHAZADA"].includes(estado)) {
+      return res.status(400).json({ error: "estado de cotizacion no es valido" });
+    }
+
+    try {
+      const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+
+      if (access.error) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const totalResult = await db.query(
+        `SELECT COALESCE(SUM(cantidad * precio_unitario), 0) AS total_repuestos
+        FROM repuestos_usados
+        WHERE id_orden = $1`,
+        [access.orden.id_orden]
+      );
+
+      const totalRepuestos = Number(totalResult.rows[0]?.total_repuestos || 0);
+      const total = manoObra + totalRepuestos;
+
+      const result = await db.query(
+        `INSERT INTO cotizaciones (
+          id_orden,
+          mano_obra,
+          total_repuestos,
+          total,
+          estado,
+          observacion
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (id_orden) DO UPDATE
+        SET mano_obra = EXCLUDED.mano_obra,
+            total_repuestos = EXCLUDED.total_repuestos,
+            total = EXCLUDED.total,
+            estado = EXCLUDED.estado,
+            observacion = EXCLUDED.observacion
+        RETURNING
+          id_cotizacion,
+          id_orden,
+          mano_obra,
+          total_repuestos,
+          total,
+          estado,
+          observacion,
+          fecha_creacion,
+          fecha_respuesta`,
+        [access.orden.id_orden, manoObra, totalRepuestos, total, estado, observacion]
+      );
+
+      return res.json({ cotizacion: result.rows[0] });
+    } catch (error) {
+      console.error("Error guardando cotizacion:", error);
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+  }
+);
+
+router.get(
+  "/:id/evidencias",
+  verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"),
+  async (req, res) => {
+    try {
+      const access = await getOrdenParaUsuario(
+        req.params.id,
+        req.usuario,
+        true,
+        true
+      );
+
+      if (access.error) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const evidencias = await getEvidencias(access.orden.id_orden);
+      return res.json({ evidencias });
+    } catch (error) {
+      console.error("Error obteniendo evidencias:", error);
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+  }
+);
+
+router.post(
+  "/:id/evidencias",
+  verificarRol("ADMIN", "TECNICO"),
+  async (req, res) => {
+    const tipo = typeof req.body?.tipo === "string" ? req.body.tipo.trim().toUpperCase() : "";
+    const nombreArchivo =
+      typeof req.body?.nombre_archivo === "string" ? req.body.nombre_archivo.trim() : "";
+    const urlArchivo =
+      typeof req.body?.url_archivo === "string" ? req.body.url_archivo.trim() : "";
+    const descripcion =
+      typeof req.body?.descripcion === "string" ? req.body.descripcion.trim() : "";
+
+    if (!TIPOS_EVIDENCIA.includes(tipo)) {
+      return res.status(400).json({ error: "tipo de evidencia no es valido" });
+    }
+
+    if (!nombreArchivo) {
+      return res.status(400).json({ error: "nombre_archivo es obligatorio" });
+    }
+
+    try {
+      const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+
+      if (access.error) {
+        return res.status(access.status).json({ error: access.error });
+      }
+
+      const result = await db.query(
+        `INSERT INTO evidencias_orden (
+          id_orden,
+          tipo,
+          nombre_archivo,
+          url_archivo,
+          descripcion
+        )
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING
+          id_evidencia,
+          id_orden,
+          tipo,
+          nombre_archivo,
+          url_archivo,
+          descripcion,
+          fecha_subida`,
+        [access.orden.id_orden, tipo, nombreArchivo, urlArchivo, descripcion]
+      );
+
+      return res.status(201).json({ evidencia: result.rows[0] });
+    } catch (error) {
+      console.error("Error registrando evidencia:", error);
+      return res.status(500).json({ error: "Error interno del servidor" });
+    }
+  }
+);
+
 router.post(
   "/:id/solicitar-garantia",
   verificarRol("ADMIN", "TECNICO"),
@@ -479,7 +820,7 @@ router.post(
 
       if (duplicateResult.rows.length > 0) {
         return res.status(409).json({
-          error: "Ya existe una solicitud de garantia pendiente para esta orden"
+          error: "Ya existe una solicitud de garantia activa para esta orden"
         });
       }
 
