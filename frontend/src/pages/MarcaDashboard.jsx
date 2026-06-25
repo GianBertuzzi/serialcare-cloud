@@ -1,35 +1,9 @@
 import { useEffect, useState } from "react";
 import AppLayout from "../components/AppLayout.jsx";
 import DataTable from "../components/DataTable.jsx";
-import OrdenDetalleModal from "../components/OrdenDetalleModal.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import api from "../services/api";
-
-function formatDate(value) {
-  if (!value) {
-    return "Sin revision";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "Fecha invalida";
-  }
-
-  return new Intl.DateTimeFormat("es-CL", {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(date);
-}
-
-function formatCurrency(value) {
-  return new Intl.NumberFormat("es-CL", {
-    style: "currency",
-    currency: "CLP",
-    maximumFractionDigits: 0
-  }).format(Number(value || 0));
-}
 
 const initialSucursalForm = {
   nombre: "",
@@ -42,41 +16,15 @@ const initialSucursalForm = {
 };
 
 function MarcaDashboard() {
-  const [garantias, setGarantias] = useState([]);
   const [sucursales, setSucursales] = useState([]);
-  const [ordenes, setOrdenes] = useState([]);
-  const [isLoadingGarantias, setIsLoadingGarantias] = useState(true);
   const [isLoadingSucursales, setIsLoadingSucursales] = useState(true);
-  const [isLoadingOrdenes, setIsLoadingOrdenes] = useState(true);
-  const [error, setError] = useState("");
   const [sucursalError, setSucursalError] = useState("");
   const [sucursalSuccess, setSucursalSuccess] = useState("");
   const [sucursalFormError, setSucursalFormError] = useState("");
-  const [ordenesError, setOrdenesError] = useState("");
-  const [updatingId, setUpdatingId] = useState(null);
   const [updatingSucursalId, setUpdatingSucursalId] = useState(null);
   const [isCreatingSucursal, setIsCreatingSucursal] = useState(false);
   const [isSucursalFormOpen, setIsSucursalFormOpen] = useState(false);
   const [sucursalForm, setSucursalForm] = useState(initialSucursalForm);
-  const [detalleGarantia, setDetalleGarantia] = useState(null);
-  const [selectedDetailOrder, setSelectedDetailOrder] = useState(null);
-
-  async function loadGarantias() {
-    setIsLoadingGarantias(true);
-    setError("");
-
-    try {
-      const response = await api.get("/garantias");
-      setGarantias(response.data.garantias || []);
-    } catch (requestError) {
-      setError(
-        requestError.response?.data?.error ||
-          "No se pudieron cargar las garantias."
-      );
-    } finally {
-      setIsLoadingGarantias(false);
-    }
-  }
 
   async function loadSucursales() {
     setIsLoadingSucursales(true);
@@ -95,54 +43,9 @@ function MarcaDashboard() {
     }
   }
 
-  async function loadOrdenes() {
-    setIsLoadingOrdenes(true);
-    setOrdenesError("");
-
-    try {
-      const response = await api.get("/ordenes");
-      setOrdenes(response.data.ordenes || []);
-    } catch (requestError) {
-      setOrdenesError(
-        requestError.response?.data?.error ||
-          "No se pudieron cargar las ordenes generales."
-      );
-    } finally {
-      setIsLoadingOrdenes(false);
-    }
-  }
-
   useEffect(() => {
-    loadGarantias();
     loadSucursales();
-    loadOrdenes();
   }, []);
-
-  async function updateGarantia(idGarantia, action) {
-    setUpdatingId(idGarantia);
-    setError("");
-
-    const observacionMarca = window.prompt(
-      "Observacion de marca (opcional)",
-      action === "aprobar" ? "Garantia aprobada" : "Garantia rechazada"
-    );
-
-    try {
-      await api.put(
-        `/garantias/${idGarantia}/${action}`,
-        observacionMarca ? { observacion_marca: observacionMarca } : {}
-      );
-      setDetalleGarantia(null);
-      await loadGarantias();
-    } catch (requestError) {
-      setError(
-        requestError.response?.data?.error ||
-          "No se pudo actualizar la solicitud de garantia."
-      );
-    } finally {
-      setUpdatingId(null);
-    }
-  }
 
   function handleSucursalInput(event) {
     const { name, value } = event.target;
@@ -229,37 +132,35 @@ function MarcaDashboard() {
     }
   }
 
-  async function handleDesactivarSucursal(idSucursal) {
+  async function handleSucursalEstado(idSucursal, nextAction) {
     setUpdatingSucursalId(idSucursal);
     setSucursalError("");
+    setSucursalSuccess("");
 
     try {
-      await api.put(`/sucursales/${idSucursal}/desactivar`);
+      await api.put(`/sucursales/${idSucursal}/${nextAction}`);
       await loadSucursales();
+      setSucursalSuccess(
+        nextAction === "activar"
+          ? "Sucursal activada correctamente"
+          : "Sucursal desactivada correctamente"
+      );
     } catch (requestError) {
       setSucursalError(
         requestError.response?.data?.error ||
-          "No se pudo desactivar la sucursal."
+          `No se pudo ${nextAction === "activar" ? "activar" : "desactivar"} la sucursal.`
       );
     } finally {
       setUpdatingSucursalId(null);
     }
   }
 
-  function getGarantiaRepuestos(garantia) {
-    return Array.isArray(garantia?.repuestos_usados)
-      ? garantia.repuestos_usados
-      : [];
-  }
-
-  function openGarantiaDetalle(garantia) {
-    setSelectedDetailOrder({
-      id_orden: garantia.id_orden,
-      numero_serie: garantia.numero_serie,
-      marca: garantia.marca,
-      modelo: garantia.modelo
-    });
-  }
+  const sucursalesActivas = sucursales.filter(
+    (sucursal) => sucursal.estado === "ACTIVA"
+  ).length;
+  const sucursalesInactivas = sucursales.filter(
+    (sucursal) => sucursal.estado === "INACTIVA"
+  ).length;
 
   const sucursalColumns = [
     { key: "nombre", label: "Nombre", searchValue: (sucursal) => sucursal.nombre },
@@ -293,133 +194,35 @@ function MarcaDashboard() {
       label: "Acciones",
       searchable: false,
       sortable: false,
-      render: (sucursal) => (
-        <button
-          className="btn btn-outline-danger btn-sm"
-          type="button"
-          disabled={sucursal.estado === "INACTIVA" || updatingSucursalId === sucursal.id_sucursal}
-          onClick={() => handleDesactivarSucursal(sucursal.id_sucursal)}
-        >
-          Desactivar
-        </button>
-      )
+      render: (sucursal) => {
+        const isInactive = sucursal.estado === "INACTIVA";
+        const action = isInactive ? "activar" : "desactivar";
+
+        return (
+          <button
+            className={isInactive ? "btn btn-outline-success btn-sm" : "btn btn-outline-danger btn-sm"}
+            type="button"
+            disabled={updatingSucursalId === sucursal.id_sucursal}
+            onClick={() => handleSucursalEstado(sucursal.id_sucursal, action)}
+          >
+            {isInactive ? "Activar" : "Desactivar"}
+          </button>
+        );
+      }
     }
   ];
 
-  const ordenColumns = [
-    { key: "id_orden", label: "ID", searchValue: (orden) => orden.id_orden, sortValue: (orden) => Number(orden.id_orden || 0) },
-    {
-      key: "nombre_sucursal",
-      label: "Sucursal",
-      searchValue: (orden) => orden.nombre_sucursal || "Sin sucursal",
-      render: (orden) => orden.nombre_sucursal || "Sin sucursal"
-    },
-    { key: "numero_serie", label: "Serie", searchValue: (orden) => orden.numero_serie },
-    {
-      key: "modelo",
-      label: "Modelo",
-      searchValue: (orden) => `${orden.descripcion_modelo || ""} ${orden.modelo || ""} ${orden.cliente_nombre || ""}`,
-      render: (orden) => orden.descripcion_modelo || orden.modelo
-    },
-    {
-      key: "estado",
-      label: "Estado",
-      searchValue: (orden) => orden.estado,
-      render: (orden) => <StatusBadge value={orden.estado} />
-    },
-    {
-      key: "valor_revision",
-      label: "Valor revision",
-      searchValue: (orden) => orden.valor_revision,
-      sortValue: (orden) => Number(orden.valor_revision || 0),
-      render: (orden) => formatCurrency(orden.valor_revision)
-    },
-    {
-      key: "fecha_creacion",
-      label: "Fecha",
-      searchValue: (orden) => formatDate(orden.fecha_creacion),
-      sortValue: (orden) => orden.fecha_creacion,
-      render: (orden) => formatDate(orden.fecha_creacion)
-    }
-  ];
-
-  const garantiaColumns = [
-    {
-      key: "id_garantia",
-      label: "ID",
-      searchValue: (garantia) => garantia.id_garantia,
-      sortValue: (garantia) => Number(garantia.id_garantia || 0)
-    },
-    {
-      key: "nombre_sucursal",
-      label: "Sucursal",
-      searchValue: (garantia) => garantia.nombre_sucursal || "Sin sucursal",
-      render: (garantia) => garantia.nombre_sucursal || "Sin sucursal"
-    },
-    {
-      key: "id_orden",
-      label: "Orden",
-      searchValue: (garantia) => garantia.id_orden,
-      sortValue: (garantia) => Number(garantia.id_orden || 0),
-      render: (garantia) => `#${garantia.id_orden || "-"}`
-    },
-    {
-      key: "producto",
-      label: "Producto",
-      searchValue: (garantia) => `${garantia.numero_serie || ""} ${garantia.marca || ""} ${garantia.modelo || ""}`,
-      render: (garantia) => (
-        <>
-          <strong>{garantia.numero_serie || "Sin serie"}</strong>
-          <span className="table-subtext">
-            {[garantia.marca, garantia.modelo].filter(Boolean).join(" - ") || "Sin producto"}
-          </span>
-        </>
-      )
-    },
-    {
-      key: "estado",
-      label: "Estado",
-      searchValue: (garantia) => garantia.estado,
-      render: (garantia) => <StatusBadge value={garantia.estado} />
-    },
-    {
-      key: "fecha_solicitud",
-      label: "Fecha solicitud",
-      searchValue: (garantia) => formatDate(garantia.fecha_solicitud),
-      sortValue: (garantia) => garantia.fecha_solicitud,
-      render: (garantia) => formatDate(garantia.fecha_solicitud)
-    },
-    {
-      key: "acciones",
-      label: "Acciones",
-      searchable: false,
-      sortable: false,
-      render: (garantia) => (
-        <div className="table-actions">
-          <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => openGarantiaDetalle(garantia)}>
-            Ver detalle
-          </button>
-          <button className="btn btn-success btn-sm" type="button" disabled={updatingId === garantia.id_garantia} onClick={() => updateGarantia(garantia.id_garantia, "aprobar")}>
-            Aprobar
-          </button>
-          <button className="btn btn-outline-danger btn-sm" type="button" disabled={updatingId === garantia.id_garantia} onClick={() => updateGarantia(garantia.id_garantia, "rechazar")}>
-            Rechazar
-          </button>
-        </div>
-      )
-    }
-  ];
   return (
     <AppLayout title="Panel marca" eyebrow="MARCA">
       <section id="dashboard" className="row g-3 mb-4">
         <div className="col-md-4">
-          <StatCard title="Sucursales autorizadas" value={sucursales.length} detail="Servicios tecnicos registrados" tone="primary" label="SU" />
+          <StatCard title="Sucursales autorizadas" value={sucursales.length} detail="Red registrada" tone="primary" label="SU" />
         </div>
         <div className="col-md-4">
-          <StatCard title="Garantias pendientes" value={garantias.filter((garantia) => garantia.estado === "PENDIENTE").length} detail="Solicitudes por resolver" tone="warning" label="GA" />
+          <StatCard title="Activas" value={sucursalesActivas} detail="Operativas actualmente" tone="success" label="AC" />
         </div>
         <div className="col-md-4">
-          <StatCard title="Ordenes generales" value={ordenes.length} detail="Red autorizada" tone="success" label="OS" />
+          <StatCard title="Inactivas" value={sucursalesInactivas} detail="Fuera de operacion" tone="danger" label="IN" />
         </div>
       </section>
 
@@ -453,7 +256,7 @@ function MarcaDashboard() {
                 </div>
               </div>
 
-              <div className="form-section-heading mt-4">Admin inicial de sucursal</div>
+              <div className="form-section-heading mt-4">Admin inicial</div>
               <div className="row g-3">
                 <div className="col-md-4">
                   <label className="form-label">Nombre admin</label>
@@ -501,49 +304,6 @@ function MarcaDashboard() {
           label: isSucursalFormOpen ? "Cancelar" : "+ Agregar sucursal",
           className: isSucursalFormOpen ? "btn btn-outline-secondary" : "btn btn-primary",
           onClick: isSucursalFormOpen ? closeSucursalForm : openSucursalForm
-        }}
-      />
-
-      <DataTable
-        sectionId="ordenes"
-        eyebrow="Operacion"
-        title="Ordenes generales"
-        rows={ordenes}
-        columns={ordenColumns}
-        getRowKey={(orden) => orden.id_orden}
-        searchPlaceholder="Buscar por sucursal, serie, cliente o estado"
-        emptyMessage="No hay ordenes registradas."
-        loading={isLoadingOrdenes}
-        loadingMessage="Cargando ordenes..."
-        error={ordenesError}
-        initialSortKey="nombre_sucursal"
-      />
-
-      {selectedDetailOrder ? (
-        <OrdenDetalleModal
-          orden={selectedDetailOrder}
-          readOnly
-          onClose={() => setSelectedDetailOrder(null)}
-          onUpdated={loadGarantias}
-        />
-      ) : null}
-      <DataTable
-        sectionId="garantias"
-        eyebrow="Garantias"
-        title="Solicitudes de garantia"
-        rows={garantias}
-        columns={garantiaColumns}
-        getRowKey={(garantia) => garantia.id_garantia}
-        searchPlaceholder="Buscar por sucursal, orden, serie, marca, modelo, tecnico o estado"
-        emptyMessage="No hay garantias registradas."
-        loading={isLoadingGarantias}
-        loadingMessage="Cargando garantias..."
-        error={error}
-        initialSortKey="id_garantia"
-        toolbarAction={{
-          label: "Consulta publica",
-          className: "btn btn-outline-secondary",
-          onClick: () => window.location.assign("/consulta-publica")
         }}
       />
     </AppLayout>

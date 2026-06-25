@@ -49,8 +49,8 @@ router.get("/", async (req, res) => {
 
 router.post("/", async (req, res) => {
   const nombre = cleanString(req.body?.nombre);
-  const ciudad = cleanString(req.body?.ciudad) || null;
-  const region = cleanString(req.body?.region) || null;
+  const ciudad = cleanString(req.body?.ciudad);
+  const region = cleanString(req.body?.region);
   const direccion = cleanString(req.body?.direccion) || null;
   const adminNombre = cleanString(req.body?.admin_nombre);
   const adminEmail = cleanString(req.body?.admin_email).toLowerCase();
@@ -59,6 +59,14 @@ router.post("/", async (req, res) => {
 
   if (!nombre) {
     return res.status(400).json({ error: "nombre es obligatorio" });
+  }
+
+  if (!ciudad) {
+    return res.status(400).json({ error: "ciudad es obligatoria" });
+  }
+
+  if (!region) {
+    return res.status(400).json({ error: "region es obligatoria" });
   }
 
   if (!adminNombre) {
@@ -229,6 +237,37 @@ router.put("/:id", async (req, res) => {
     return res.json({ sucursal: result.rows[0] });
   } catch (error) {
     console.error("Error actualizando sucursal:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+router.put("/:id/activar", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `UPDATE sucursales
+      SET estado = 'ACTIVA'
+      WHERE id_sucursal = $1
+      RETURNING
+        id_sucursal,
+        nombre,
+        ciudad,
+        region,
+        direccion,
+        costo_ingreso_taller,
+        estado,
+        fecha_creacion`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Sucursal no encontrada" });
+    }
+
+    return res.json({ sucursal: result.rows[0] });
+  } catch (error) {
+    console.error("Error activando sucursal:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
