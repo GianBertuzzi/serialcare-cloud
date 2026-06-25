@@ -9,6 +9,9 @@ const authRoutes = require("./routes/auth.routes");
 const productosRoutes = require("./routes/productos.routes");
 const ordenesRoutes = require("./routes/ordenes.routes");
 const garantiasRoutes = require("./routes/garantias.routes");
+const sucursalesRoutes = require("./routes/sucursales.routes");
+const modelosRoutes = require("./routes/modelos.routes");
+const preciosSucursalRoutes = require("./routes/preciosSucursal.routes");
 
 const app = express();
 
@@ -19,6 +22,9 @@ app.use("/api/auth", authRoutes);
 app.use("/api/productos", productosRoutes);
 app.use("/api/ordenes", ordenesRoutes);
 app.use("/api/garantias", garantiasRoutes);
+app.use("/api/sucursales", sucursalesRoutes);
+app.use("/api/modelos", modelosRoutes);
+app.use("/api/precios-sucursal", preciosSucursalRoutes);
 
 app.get("/api/health", (req, res) => {
   res.json({

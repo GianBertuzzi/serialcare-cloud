@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import DataTable from "../components/DataTable.jsx";
+import StatusBadge from "../components/StatusBadge.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import api from "../services/api";
 
@@ -20,6 +21,14 @@ function formatDate(value) {
     dateStyle: "short",
     timeStyle: "short"
   }).format(date);
+}
+
+function formatCurrency(value) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0
+  }).format(Number(value || 0));
 }
 
 function TecnicoDashboard() {
@@ -47,37 +56,7 @@ function TecnicoDashboard() {
   }
 
   useEffect(() => {
-    let isMounted = true;
-
-    async function loadInitialOrdenes() {
-      setIsLoading(true);
-      setError("");
-
-      try {
-        const response = await api.get("/ordenes");
-
-        if (isMounted) {
-          setOrdenes(response.data.ordenes || []);
-        }
-      } catch (requestError) {
-        if (isMounted) {
-          setError(
-            requestError.response?.data?.error ||
-              "No se pudieron cargar las ordenes de servicio."
-          );
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    loadInitialOrdenes();
-
-    return () => {
-      isMounted = false;
-    };
+    loadOrdenes();
   }, []);
 
   async function handleEstadoChange(idOrden, estado) {
@@ -96,6 +75,81 @@ function TecnicoDashboard() {
       setUpdatingId(null);
     }
   }
+
+  const ordenColumns = [
+    {
+      key: "id_orden",
+      label: "ID",
+      searchValue: (orden) => orden.id_orden,
+      sortValue: (orden) => Number(orden.id_orden || 0)
+    },
+    {
+      key: "numero_serie",
+      label: "Numero de serie",
+      searchValue: (orden) => orden.numero_serie,
+      render: (orden) => (
+        <>
+          <strong>{orden.numero_serie || "Sin serie"}</strong>
+          {orden.marca || orden.modelo ? (
+            <span className="table-subtext">
+              {[orden.marca, orden.modelo].filter(Boolean).join(" - ")}
+            </span>
+          ) : null}
+        </>
+      )
+    },
+    {
+      key: "nombre_sucursal",
+      label: "Sucursal",
+      searchValue: (orden) => orden.nombre_sucursal || "Sin sucursal",
+      render: (orden) => (
+        <>
+          {orden.nombre_sucursal || "Sin sucursal"}
+          <span className="table-subtext">
+            Ingreso {formatCurrency(orden.costo_ingreso_taller)} - Revision {formatCurrency(orden.valor_revision)}
+          </span>
+        </>
+      )
+    },
+    {
+      key: "diagnostico",
+      label: "Diagnostico",
+      searchValue: (orden) => orden.diagnostico
+    },
+    {
+      key: "estado",
+      label: "Estado",
+      searchValue: (orden) => orden.estado,
+      render: (orden) => <StatusBadge value={orden.estado} />
+    },
+    {
+      key: "cambiar_estado",
+      label: "Cambiar estado",
+      searchable: false,
+      sortable: false,
+      render: (orden) => (
+        <select
+          className="state-select"
+          value={orden.estado}
+          disabled={updatingId === orden.id_orden}
+          onChange={(event) => handleEstadoChange(orden.id_orden, event.target.value)}
+        >
+          {ESTADOS_ORDEN.map((estado) => (
+            <option key={estado} value={estado}>
+              {estado}
+            </option>
+          ))}
+        </select>
+      )
+    },
+    {
+      key: "fecha_creacion",
+      label: "Fecha creacion",
+      searchValue: (orden) => formatDate(orden.fecha_creacion),
+      sortValue: (orden) => orden.fecha_creacion,
+      render: (orden) => formatDate(orden.fecha_creacion)
+    }
+  ];
 
   return (
     <main className="page-shell">
@@ -125,77 +179,19 @@ function TecnicoDashboard() {
         </article>
       </section>
 
-      <section className="panel dashboard-table-section">
-        <div className="table-header">
-          <div>
-            <p className="eyebrow">Servicio tecnico</p>
-            <h2>Ordenes de servicio</h2>
-          </div>
-          <Link className="secondary-link" to="/consulta-publica">
-            Consulta publica
-          </Link>
-        </div>
-
-        {isLoading ? <p className="muted">Cargando ordenes...</p> : null}
-        {error ? <p className="alert error-alert">{error}</p> : null}
-
-        {!isLoading && !error && ordenes.length === 0 ? (
-          <p className="empty-state">No hay ordenes de servicio registradas.</p>
-        ) : null}
-
-        {!isLoading && !error && ordenes.length > 0 ? (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Numero de serie</th>
-                  <th>Diagnostico</th>
-                  <th>Estado</th>
-                  <th>Cambiar estado</th>
-                  <th>Fecha creacion</th>
-                </tr>
-              </thead>
-              <tbody>
-                {ordenes.map((orden) => (
-                  <tr key={orden.id_orden}>
-                    <td>{orden.id_orden}</td>
-                    <td>
-                      <strong>{orden.numero_serie || "Sin serie"}</strong>
-                      {orden.marca || orden.modelo ? (
-                        <span className="table-subtext">
-                          {[orden.marca, orden.modelo].filter(Boolean).join(" - ")}
-                        </span>
-                      ) : null}
-                    </td>
-                    <td>{orden.diagnostico}</td>
-                    <td>
-                      <span className="status-badge">{orden.estado}</span>
-                    </td>
-                    <td>
-                      <select
-                        className="state-select"
-                        value={orden.estado}
-                        disabled={updatingId === orden.id_orden}
-                        onChange={(event) =>
-                          handleEstadoChange(orden.id_orden, event.target.value)
-                        }
-                      >
-                        {ESTADOS_ORDEN.map((estado) => (
-                          <option key={estado} value={estado}>
-                            {estado}
-                          </option>
-                        ))}
-                      </select>
-                    </td>
-                    <td>{formatDate(orden.fecha_creacion)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </section>
+      <DataTable
+        eyebrow="Servicio tecnico"
+        title="Ordenes de servicio"
+        rows={ordenes}
+        columns={ordenColumns}
+        getRowKey={(orden) => orden.id_orden}
+        searchPlaceholder="Buscar por serie, modelo, diagnostico o estado"
+        emptyMessage="No hay ordenes de servicio registradas."
+        loading={isLoading}
+        loadingMessage="Cargando ordenes..."
+        error={error}
+        initialSortKey="id_orden"
+      />
     </main>
   );
 }
