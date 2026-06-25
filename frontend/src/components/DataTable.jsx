@@ -1,4 +1,4 @@
-﻿import { useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 
 const DEFAULT_PAGE_SIZE = 8;
 
@@ -38,6 +38,20 @@ function compareValues(a, b) {
   }
 
   return String(a).localeCompare(String(b), "es", { sensitivity: "base" });
+}
+
+function getCellClassName(column) {
+  const classNames = [];
+
+  if (column.className) {
+    classNames.push(column.className);
+  }
+
+  if (column.isDate || String(column.key || "").toLowerCase().includes("fecha")) {
+    classNames.push("date-cell");
+  }
+
+  return classNames.join(" ");
 }
 
 function DataTable({
@@ -179,9 +193,9 @@ function DataTable({
                     const isActive = sortKey === column.key;
                     const indicator = isActive
                       ? sortDirection === "asc"
-                        ? " ^"
-                        : " v"
-                      : "";
+                        ? "\u2191"
+                        : "\u2193"
+                      : "\u2195";
 
                     return (
                       <th key={column.key} className={column.headerClassName || ""}>
@@ -189,11 +203,12 @@ function DataTable({
                           column.label
                         ) : (
                           <button
-                            className="sort-button"
+                            className={`sort-button ${isActive ? "active" : ""}`.trim()}
                             type="button"
                             onClick={() => handleSort(column)}
                           >
-                            {column.label}{indicator}
+                            <span>{column.label}</span>
+                            <span className="sort-indicator" aria-hidden="true">{indicator}</span>
                           </button>
                         )}
                       </th>
@@ -205,7 +220,7 @@ function DataTable({
                 {pageRows.map((row) => (
                   <tr key={getRowKey(row)}>
                     {columns.map((column) => (
-                      <td key={column.key} className={column.className || ""}>
+                      <td key={column.key} className={getCellClassName(column)}>
                         {column.render ? column.render(row) : row[column.key]}
                       </td>
                     ))}

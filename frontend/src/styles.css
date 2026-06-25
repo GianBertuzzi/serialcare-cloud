@@ -857,3 +857,27 @@ textarea {
   color: var(--sc-primary);
   border-color: #b9c6ff;
 }
+.sort-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+
+.sort-indicator {
+  display: inline-block;
+  width: 1rem;
+  text-align: center;
+  color: var(--sc-muted);
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.sort-button.active .sort-indicator {
+  color: var(--sc-primary);
+  font-weight: 700;
+}
+
+.date-cell {
+  white-space: nowrap;
+}

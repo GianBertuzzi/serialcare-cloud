@@ -1,26 +1,10 @@
-﻿import { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import AppLayout from "../components/AppLayout.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
 import api from "../services/api";
-
-function formatDate(value) {
-  if (!value) {
-    return "Sin fecha";
-  }
-
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "Fecha invalida";
-  }
-
-  return new Intl.DateTimeFormat("es-CL", {
-    dateStyle: "short",
-    timeStyle: "short"
-  }).format(date);
-}
+import { formatDate } from "../utils/format.js";
 
 function ClienteDashboard() {
   const [productos, setProductos] = useState([]);
@@ -134,7 +118,7 @@ function ClienteDashboard() {
                       {producto.estado_reparacion ? (
                         <>
                           <StatusBadge value={producto.estado_reparacion} />
-                          <span className="table-subtext">
+                          <span className="table-subtext date-cell">
                             Orden #{producto.id_ultima_orden} - {formatDate(producto.fecha_ultima_orden)}
                           </span>
                         </>
@@ -142,7 +126,7 @@ function ClienteDashboard() {
                         <span className="no-badge">Sin ordenes</span>
                       )}
                     </td>
-                    <td>{formatDate(producto.fecha_registro)}</td>
+                    <td className="date-cell">{formatDate(producto.fecha_registro)}</td>
                   </tr>
                 ))}
               </tbody>
