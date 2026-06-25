@@ -28,16 +28,27 @@ router.get("/", async (req, res) => {
   try {
     const result = await db.query(
       `SELECT
-        id_sucursal,
-        nombre,
-        ciudad,
-        region,
-        direccion,
-        costo_ingreso_taller,
-        estado,
-        fecha_creacion
-      FROM sucursales
-      ORDER BY id_sucursal ASC`
+        s.id_sucursal,
+        s.nombre,
+        s.ciudad,
+        s.region,
+        s.direccion,
+        s.costo_ingreso_taller,
+        s.estado,
+        s.fecha_creacion,
+        admin_user.nombre AS admin_nombre,
+        admin_user.email AS admin_email
+      FROM sucursales s
+      LEFT JOIN LATERAL (
+        SELECT u.nombre, u.email
+        FROM usuarios u
+        INNER JOIN roles r ON r.id_rol = u.id_rol
+        WHERE u.id_sucursal = s.id_sucursal
+          AND r.nombre_rol = 'ADMIN'
+        ORDER BY u.fecha_creacion ASC, u.id_usuario ASC
+        LIMIT 1
+      ) admin_user ON TRUE
+      ORDER BY s.id_sucursal ASC`
     );
 
     return res.json({ sucursales: result.rows });

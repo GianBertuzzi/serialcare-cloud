@@ -12,9 +12,25 @@ function publicUser(user) {
     nombre: user.nombre,
     email: user.email,
     rol: user.rol,
-    estado: user.estado
+    estado: user.estado,
+    id_sucursal: user.id_sucursal || null,
+    nombre_sucursal: user.nombre_sucursal || null
   };
 }
+
+const USER_SELECT = `SELECT
+  u.id_usuario,
+  u.nombre,
+  u.email,
+  u.password_hash,
+  u.id_rol,
+  u.id_sucursal,
+  s.nombre AS nombre_sucursal,
+  u.estado,
+  r.nombre_rol AS rol
+FROM usuarios u
+INNER JOIN roles r ON r.id_rol = u.id_rol
+LEFT JOIN sucursales s ON s.id_sucursal = u.id_sucursal`;
 
 router.post("/login", async (req, res) => {
   const { email, password } = req.body;
@@ -30,17 +46,8 @@ router.post("/login", async (req, res) => {
 
   try {
     const result = await db.query(
-      `SELECT
-        u.id_usuario,
-        u.nombre,
-        u.email,
-        u.password_hash,
-        u.id_rol,
-        u.estado,
-        r.nombre_rol AS rol
-      FROM usuarios u
-      INNER JOIN roles r ON r.id_rol = u.id_rol
-      WHERE u.email = $1
+      `${USER_SELECT}
+      WHERE LOWER(u.email) = LOWER($1)
       LIMIT 1`,
       [emailLogin]
     );
@@ -92,14 +99,7 @@ router.post("/login", async (req, res) => {
 router.get("/me", verificarToken, async (req, res) => {
   try {
     const result = await db.query(
-      `SELECT
-        u.id_usuario,
-        u.nombre,
-        u.email,
-        u.estado,
-        r.nombre_rol AS rol
-      FROM usuarios u
-      INNER JOIN roles r ON r.id_rol = u.id_rol
+      `${USER_SELECT}
       WHERE u.id_usuario = $1
       LIMIT 1`,
       [req.usuario.id_usuario]
@@ -109,9 +109,7 @@ router.get("/me", verificarToken, async (req, res) => {
       return res.status(404).json({ error: "Usuario no encontrado" });
     }
 
-    return res.json({
-      usuario: publicUser(result.rows[0])
-    });
+    return res.json({ usuario: publicUser(result.rows[0]) });
   } catch (error) {
     console.error("Error obteniendo usuario autenticado:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
