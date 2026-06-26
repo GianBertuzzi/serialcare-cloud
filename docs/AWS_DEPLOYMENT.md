@@ -52,12 +52,54 @@ Backend usa AZURE_STORAGE_* para evidencias
 - `frontend/nginx.conf`: sirve React y proxyea `/api` al backend.
 - `backend/.env.example`: variables esperadas.
 
+
+## Flujo local a nube
+
+1. Desarrollo local:
+
+   - Trabaja primero en tu PC con `npm run dev` para backend y frontend.
+   - Usa `docker compose up -d postgres` o `docker compose up -d --build` para pruebas locales con Docker.
+   - Prueba login, dashboards, `/api/health` y flujos principales antes de subir cambios.
+
+2. Repositorio GitHub:
+
+   - Guarda cambios con `git add .`.
+   - Crea commit con `git commit -m "mensaje"`.
+   - Sube el codigo con `git push`.
+   - CloudFormation usa `GitHubRepoUrl` para que cada EC2 App clone este repositorio.
+   - Si el repositorio es privado, debes hacerlo publico temporalmente o usar un metodo seguro como deploy key/token. No hardcodear tokens ni credenciales en el template.
+
+3. AWS:
+
+   - CloudFormation crea VPC, subredes, Security Groups, EC2 App 1, EC2 App 2, ALB, RDS y Bastion.
+   - Cada EC2 App clona el repositorio desde `GitHubRepoUrl`.
+   - Cada EC2 App crea `backend/.env` con variables del stack.
+   - Cada EC2 App ejecuta `docker compose -f docker-compose.prod.yml up -d --build`.
+   - El Load Balancer entrega una URL publica en el output `LoadBalancerUrl`.
+   - RDS entrega un endpoint privado en `RdsEndpointAddress`.
+   - Bastion entrega una IP publica en `BastionPublicIp` para administracion SSH.
+   - Las EC2 App no deben recibir SSH directo desde internet.
+
+4. Azure:
+
+   - Azure Blob Storage se crea aparte de AWS.
+   - El equipo Azure entrega `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_CONTAINER` y `AZURE_STORAGE_PUBLIC_BASE_URL`.
+   - Esas variables se pasan al backend en AWS mediante parametros CloudFormation y `backend/.env`.
+
+5. Prueba final:
+
+   - Abre `LoadBalancerUrl` en el navegador.
+   - Prueba `HealthCheckUrl` o `LoadBalancerUrl/api/health`.
+   - Apaga Docker en una EC2 App.
+   - Confirma que el Target Group marca esa instancia como `unhealthy`.
+   - Confirma que el Load Balancer sigue respondiendo con la otra EC2 App.
+
 ## Parametros CloudFormation
 
 Completar al desplegar:
 
 - `KeyName`: nombre del par de llaves EC2 existente.
-- `AllowedSSHIp`: tu IP publica en formato CIDR, por ejemplo `190.1.2.3/32`.
+- `AllowedSSHIp`: IP publica autorizada para SSH hacia Bastion. Usar formato `x.x.x.x/32`. No usar `0.0.0.0/0`.
 - `DBName`: por defecto `serialcare_db`.
 - `DBUsername`: por defecto `serialcare_user`.
 - `DBPassword`: password de RDS. No subirlo a GitHub.
@@ -71,6 +113,17 @@ Completar al desplegar:
 - `AzureStorageConnectionString`: entregado por el equipo/companero Azure. No subirlo a GitHub.
 - `AzureStorageContainer`: por defecto `evidencias`.
 - `AzureStoragePublicBaseUrl`: por ejemplo `https://cuenta.blob.core.windows.net`.
+
+
+## Repositorio privado
+
+Las EC2 App clonan el codigo desde `GitHubRepoUrl`. Si el repositorio es privado, la clonacion fallara a menos que configures autenticacion segura. Opciones aceptables:
+
+- Hacer el repositorio publico temporalmente durante la prueba academica.
+- Usar una deploy key configurada en GitHub y cargada de forma segura en la instancia.
+- Usar un token gestionado fuera del template, por ejemplo mediante AWS Secrets Manager o un mecanismo temporal seguro.
+
+No hardcodear tokens, passwords ni llaves privadas en `cloudformation-serialcare.yaml`, `UserData`, README ni commits.
 
 ## Validar plantilla antes de desplegar
 
@@ -245,7 +298,7 @@ Si `AZURE_STORAGE_CONNECTION_STRING` queda vacia:
 ## Notas y pendientes manuales
 
 - Configurar un `KeyName` existente antes de desplegar.
-- Usar `AllowedSSHIp` con `/32`, no `0.0.0.0/0`, salvo pruebas controladas.
+- Usar `AllowedSSHIp` con `/32`. No usar `0.0.0.0/0`.
 - Configurar valores reales de Azure Blob cuando existan.
 - Inicializar RDS manualmente con `schema.sql` y `seed.sql` una vez creado el stack.
 - Si usas un dominio real, apuntarlo al ALB y actualizar `FrontendUrl` si corresponde.

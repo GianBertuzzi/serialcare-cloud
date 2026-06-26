@@ -157,6 +157,17 @@ AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
 ```
 
 
+
+## Flujo Local, GitHub, AWS y Azure
+
+- Local: la app se desarrolla y prueba en el PC con `npm run dev`, `docker compose up -d postgres` o `docker compose up -d --build`.
+- GitHub: almacena el codigo que luego clonaran las EC2 App mediante `GitHubRepoUrl`.
+- AWS: ejecuta la app real con EC2 App 1, EC2 App 2, Application Load Balancer, RDS PostgreSQL y Bastion Host.
+- Azure: almacena evidencias en Blob Storage mediante variables `AZURE_STORAGE_*`.
+- No se configuran IPs manualmente para EC2 ni RDS; AWS entrega esos datos como outputs del stack.
+- La unica IP manual importante es `AllowedSSHIp`: corresponde a la IP publica del administrador en formato `x.x.x.x/32` para entrar al Bastion.
+- Las EC2 App no reciben SSH directo desde internet; se administran entrando primero al Bastion.
+
 ## Despliegue AWS
 
 La infraestructura AWS queda preparada en `infrastructure/cloudformation-serialcare.yaml` con VPC, dos subredes publicas, Application Load Balancer, dos EC2 App con Docker, Bastion Host, Security Groups y RDS PostgreSQL.
