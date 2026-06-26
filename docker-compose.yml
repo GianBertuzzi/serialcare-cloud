@@ -32,6 +32,9 @@ services:
       DATABASE_URL: postgresql://serialcare_user:serialcare_pass@postgres:5432/serialcare_db
       JWT_SECRET: cambiar_este_secreto_en_nube
       FRONTEND_URL: http://localhost:8080,http://localhost:5173
+      AZURE_STORAGE_CONNECTION_STRING: ""
+      AZURE_STORAGE_CONTAINER: evidencias
+      AZURE_STORAGE_PUBLIC_BASE_URL: ""
     ports:
       - "3000:3000"
     healthcheck:

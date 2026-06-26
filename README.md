@@ -9,7 +9,7 @@ SerialCare Cloud es una PoC academica para trazabilidad, garantia y servicio tec
 - Base de datos: PostgreSQL.
 - Contenedores: Docker Compose.
 - Nube objetivo: EC2 detras de AWS Application Load Balancer, Amazon RDS PostgreSQL y Bastion Host para administracion SSH segura.
-- Evidencias futuras: Azure Blob Storage.
+- Evidencias: Azure Blob Storage para archivos adjuntos de ordenes.
 
 No se usa XAMPP. El proyecto usa Docker, Node, React y PostgreSQL.
 
@@ -23,6 +23,9 @@ NODE_ENV=development
 DATABASE_URL=postgresql://serialcare_user:serialcare_pass@localhost:5433/serialcare_db
 JWT_SECRET=cambiar_este_secreto
 FRONTEND_URL=http://localhost:5173
+AZURE_STORAGE_CONNECTION_STRING=
+AZURE_STORAGE_CONTAINER=evidencias
+AZURE_STORAGE_PUBLIC_BASE_URL=
 ```
 
 Frontend local (`frontend/.env`):
@@ -106,6 +109,29 @@ Respuesta esperada cuando backend y PostgreSQL estan operativos:
 
 Si PostgreSQL falla, responde `503` y `database: "error"`.
 
+
+## Azure Blob Storage
+
+Las evidencias de orden permiten dos modos:
+
+- Referencia manual: registra una URL, nombre o nota sin requerir Azure.
+- Archivo real: sube el archivo a Azure Blob Storage usando `POST /api/ordenes/:id/evidencias` con `multipart/form-data`.
+
+Variables requeridas para carga real de archivos:
+
+```env
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=...
+AZURE_STORAGE_CONTAINER=evidencias
+AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
+```
+
+Si `AZURE_STORAGE_CONNECTION_STRING` no esta configurada, el backend sigue iniciando normalmente y la evidencia manual funciona. Solo la subida de archivos devuelve un error claro indicando que Azure Blob Storage no esta configurado.
+
+Limites de archivos:
+
+- Tamano maximo: 10 MB.
+- Tipos permitidos: JPG, PNG, WEBP, PDF, TXT, DOC y DOCX.
+
 ## Preparacion Para Nube
 
 Arquitectura objetivo:
@@ -115,7 +141,7 @@ Arquitectura objetivo:
 - Amazon RDS PostgreSQL reemplaza al contenedor `postgres` en produccion.
 - Security Groups limitan trafico: ALB hacia EC2, EC2 hacia RDS, SSH solo desde Bastion.
 - Bastion Host / Jump Server se usa para administracion SSH segura.
-- Azure Blob Storage se integrara despues para evidencias.
+- Azure Blob Storage almacena evidencias adjuntas de ordenes.
 
 Variables esperadas en EC2/backend:
 
@@ -125,7 +151,31 @@ NODE_ENV=production
 DATABASE_URL=postgresql://usuario:password@rds-endpoint:5432/serialcare_db
 JWT_SECRET=secreto_largo_y_unico
 FRONTEND_URL=https://dominio-o-alb
+AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=...
+AZURE_STORAGE_CONTAINER=evidencias
+AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
 ```
+
+
+## Despliegue AWS
+
+La infraestructura AWS queda preparada en `infrastructure/cloudformation-serialcare.yaml` con VPC, dos subredes publicas, Application Load Balancer, dos EC2 App con Docker, Bastion Host, Security Groups y RDS PostgreSQL.
+
+Para produccion se usa `docker-compose.prod.yml`, que levanta solo backend y frontend. La base de datos productiva es Amazon RDS, no un contenedor PostgreSQL local.
+
+Documentacion paso a paso:
+
+```text
+docs/AWS_DEPLOYMENT.md
+```
+
+Puntos clave:
+
+- Docker local: `docker compose up -d --build`.
+- Docker produccion: `docker compose -f docker-compose.prod.yml up -d --build`.
+- Multicloud: evidencias en Azure Blob Storage mediante `AZURE_STORAGE_*`.
+- Alta disponibilidad: ALB balancea entre EC2 App 1 y EC2 App 2 usando `/api/health`.
+- Administracion segura: SSH entra por Bastion Host y luego a las EC2 App por IP privada.
 
 ## Validacion Manual
 

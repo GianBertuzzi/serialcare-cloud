@@ -14,4 +14,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+export function getEvidenciasOrden(idOrden) {
+  return api.get(`/ordenes/${idOrden}/evidencias`);
+}
+
+export function createEvidenciaManual(idOrden, data) {
+  return api.post(`/ordenes/${idOrden}/evidencias`, data);
+}
+
+export function uploadEvidenciaOrden(idOrden, formData) {
+  return api.post(`/ordenes/${idOrden}/evidencias`, formData);
+}
+
 export default api;

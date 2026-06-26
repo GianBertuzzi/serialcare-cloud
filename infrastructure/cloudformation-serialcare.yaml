@@ -1,0 +1,489 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: SerialCare Cloud AWS infrastructure with ALB, two Docker EC2 app nodes, RDS PostgreSQL and Bastion Host.
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 key pair name used for SSH access.
+
+  AllowedSSHIp:
+    Type: String
+    Description: Public CIDR allowed to SSH into the Bastion Host. Example 203.0.113.10/32.
+    Default: 0.0.0.0/0
+    AllowedPattern: "^([0-9]{1,3}\\.){3}[0-9]{1,3}/[0-9]{1,2}$"
+
+  DBName:
+    Type: String
+    Description: PostgreSQL database name.
+    Default: serialcare_db
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{1,62}$"
+
+  DBUsername:
+    Type: String
+    Description: PostgreSQL admin username.
+    Default: serialcare_user
+    MinLength: 1
+    MaxLength: 63
+    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]{0,62}$"
+
+  DBPassword:
+    Type: String
+    Description: PostgreSQL admin password. Avoid characters that need URL encoding.
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 64
+    AllowedPattern: "^[A-Za-z0-9_+=,.-]+$"
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type for app and bastion nodes.
+    Default: t3.micro
+    AllowedValues:
+      - t2.micro
+      - t3.micro
+      - t3.small
+      - t3.medium
+
+  VpcCidr:
+    Type: String
+    Default: 10.30.0.0/16
+    Description: CIDR block for the VPC.
+
+  PublicSubnet1Cidr:
+    Type: String
+    Default: 10.30.1.0/24
+    Description: CIDR block for public subnet 1.
+
+  PublicSubnet2Cidr:
+    Type: String
+    Default: 10.30.2.0/24
+    Description: CIDR block for public subnet 2.
+
+  GitHubRepoUrl:
+    Type: String
+    Description: HTTPS URL of the SerialCare Cloud GitHub repository to clone on each app EC2.
+
+  JwtSecret:
+    Type: String
+    Description: JWT secret used by the backend.
+    NoEcho: true
+    MinLength: 16
+    AllowedPattern: "^[A-Za-z0-9_+=,.:;@%/-]+$"
+
+  FrontendUrl:
+    Type: String
+    Description: Public frontend URL allowed by backend CORS. Use custom domain or ALB URL when known.
+    Default: http://localhost:8080
+
+  AzureStorageConnectionString:
+    Type: String
+    Description: Azure Blob Storage connection string for evidence uploads.
+    NoEcho: true
+    Default: ""
+
+  AzureStorageContainer:
+    Type: String
+    Description: Azure Blob container name for evidences.
+    Default: evidencias
+
+  AzureStoragePublicBaseUrl:
+    Type: String
+    Description: Public Azure Blob base URL, for example https://account.blob.core.windows.net.
+    Default: ""
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: Latest Amazon Linux 2023 AMI from SSM Parameter Store.
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+
+Resources:
+  SerialCareVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: serialcare-vpc
+
+  SerialCareInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: serialcare-igw
+
+  SerialCareVpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref SerialCareVpc
+      InternetGatewayId: !Ref SerialCareInternetGateway
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SerialCareVpc
+      CidrBlock: !Ref PublicSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: serialcare-public-subnet-1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref SerialCareVpc
+      CidrBlock: !Ref PublicSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: serialcare-public-subnet-2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref SerialCareVpc
+      Tags:
+        - Key: Name
+          Value: serialcare-public-rt
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: SerialCareVpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref SerialCareInternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      RouteTableId: !Ref PublicRouteTable
+
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow public HTTP traffic to the Application Load Balancer.
+      VpcId: !Ref SerialCareVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: serialcare-alb-sg
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow SSH to Bastion only from the approved public IP.
+      VpcId: !Ref SerialCareVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSSHIp
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: serialcare-bastion-sg
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow web traffic only from ALB and SSH only from Bastion.
+      VpcId: !Ref SerialCareVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref BastionSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: serialcare-app-sg
+
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow PostgreSQL only from app EC2 instances.
+      VpcId: !Ref SerialCareVpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: serialcare-rds-sg
+
+  RdsSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Subnet group for SerialCare RDS PostgreSQL.
+      SubnetIds:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: serialcare-rds-subnet-group
+
+  SerialCareDB:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "${AWS::StackName}-postgres"
+      DBName: !Ref DBName
+      Engine: postgres
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp3
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+      DBSubnetGroupName: !Ref RdsSubnetGroup
+      VPCSecurityGroups:
+        - !Ref RdsSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+      DeletionProtection: false
+      Tags:
+        - Key: Name
+          Value: serialcare-rds-postgres
+
+  BastionHost:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      Tags:
+        - Key: Name
+          Value: serialcare-bastion
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf update -y
+          dnf install -y git postgresql15
+
+  AppInstance1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref PublicSubnet1
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: serialcare-app-1
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf update -y
+          dnf install -y docker git curl
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          if ! docker compose version >/dev/null 2>&1; then
+            curl -SL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          fi
+          rm -rf /opt/serialcare-cloud
+          git clone "${GitHubRepoUrl}" /opt/serialcare-cloud
+          cd /opt/serialcare-cloud
+          cat > backend/.env <<'ENVEOF'
+          PORT=3000
+          NODE_ENV=production
+          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}
+          JWT_SECRET=${JwtSecret}
+          FRONTEND_URL=${FrontendUrl}
+          AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
+          AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
+          AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
+          ENVEOF
+          docker compose -f docker-compose.prod.yml up -d --build
+
+  AppInstance2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SubnetId: !Ref PublicSubnet2
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      Tags:
+        - Key: Name
+          Value: serialcare-app-2
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eux
+          dnf update -y
+          dnf install -y docker git curl
+          systemctl enable --now docker
+          mkdir -p /usr/local/lib/docker/cli-plugins
+          if ! docker compose version >/dev/null 2>&1; then
+            curl -SL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
+            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+          fi
+          rm -rf /opt/serialcare-cloud
+          git clone "${GitHubRepoUrl}" /opt/serialcare-cloud
+          cd /opt/serialcare-cloud
+          cat > backend/.env <<'ENVEOF'
+          PORT=3000
+          NODE_ENV=production
+          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}
+          JWT_SECRET=${JwtSecret}
+          FRONTEND_URL=${FrontendUrl}
+          AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
+          AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
+          AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
+          ENVEOF
+          docker compose -f docker-compose.prod.yml up -d --build
+
+  SerialCareLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: serialcare-alb
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: serialcare-alb
+
+  SerialCareTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: serialcare-tg
+      VpcId: !Ref SerialCareVpc
+      Protocol: HTTP
+      Port: 80
+      TargetType: instance
+      HealthCheckEnabled: true
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthCheckPath: /api/health
+      Matcher:
+        HttpCode: "200"
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      Targets:
+        - Id: !Ref AppInstance1
+          Port: 80
+        - Id: !Ref AppInstance2
+          Port: 80
+      Tags:
+        - Key: Name
+          Value: serialcare-target-group
+
+  SerialCareHttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref SerialCareLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref SerialCareTargetGroup
+
+Outputs:
+  LoadBalancerDnsName:
+    Description: Public DNS name of the Application Load Balancer.
+    Value: !GetAtt SerialCareLoadBalancer.DNSName
+
+  LoadBalancerUrl:
+    Description: Public HTTP URL for SerialCare Cloud.
+    Value: !Sub "http://${SerialCareLoadBalancer.DNSName}"
+
+  HealthCheckUrl:
+    Description: Public backend health check URL through the ALB.
+    Value: !Sub "http://${SerialCareLoadBalancer.DNSName}/api/health"
+
+  BastionPublicIp:
+    Description: Public IP address of the Bastion Host.
+    Value: !GetAtt BastionHost.PublicIp
+
+  App1PublicIp:
+    Description: Public IP address of App EC2 instance 1.
+    Value: !GetAtt AppInstance1.PublicIp
+
+  App2PublicIp:
+    Description: Public IP address of App EC2 instance 2.
+    Value: !GetAtt AppInstance2.PublicIp
+
+  App1PrivateIp:
+    Description: Private IP address of App EC2 instance 1 for SSH from Bastion.
+    Value: !GetAtt AppInstance1.PrivateIp
+
+  App2PrivateIp:
+    Description: Private IP address of App EC2 instance 2 for SSH from Bastion.
+    Value: !GetAtt AppInstance2.PrivateIp
+
+  RdsEndpointAddress:
+    Description: RDS PostgreSQL endpoint address.
+    Value: !GetAtt SerialCareDB.Endpoint.Address
+
+  RdsEndpointPort:
+    Description: RDS PostgreSQL endpoint port.
+    Value: !GetAtt SerialCareDB.Endpoint.Port
+
+  VpcId:
+    Description: VPC ID.
+    Value: !Ref SerialCareVpc
+
+  LoadBalancerSecurityGroupId:
+    Description: Security Group ID for ALB.
+    Value: !Ref LoadBalancerSecurityGroup
+
+  AppSecurityGroupId:
+    Description: Security Group ID for app EC2 instances.
+    Value: !Ref AppSecurityGroup
+
+  BastionSecurityGroupId:
+    Description: Security Group ID for Bastion Host.
+    Value: !Ref BastionSecurityGroup
+
+  RdsSecurityGroupId:
+    Description: Security Group ID for RDS PostgreSQL.
+    Value: !Ref RdsSecurityGroup

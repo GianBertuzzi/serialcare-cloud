@@ -1,12 +1,55 @@
 const express = require("express");
+const multer = require("multer");
 const db = require("../db");
 const verificarToken = require("../middlewares/verificarToken");
 const verificarRol = require("../middlewares/verificarRol");
+const { uploadEvidenceFile } = require("../services/azureBlob.service");
 
 const router = express.Router();
 
 const TIPOS_ATENCION = ["GARANTIA", "REPARACION", "MANTENCION", "MANTENIMIENTO", "PUESTA_EN_MARCHA"];
 const TIPOS_EVIDENCIA = ["IMAGEN", "PDF", "LINK", "TEXTO", "DOCUMENTO"];
+const ALLOWED_EVIDENCE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+]);
+const MAX_EVIDENCE_FILE_SIZE = 10 * 1024 * 1024;
+
+const evidenciaUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_EVIDENCE_FILE_SIZE },
+  fileFilter(req, file, callback) {
+    if (!ALLOWED_EVIDENCE_MIME_TYPES.has(file.mimetype)) {
+      return callback(new Error("Archivo no permitido. Use imagen JPG/PNG/WEBP, PDF, TXT, DOC o DOCX."));
+    }
+
+    return callback(null, true);
+  }
+});
+
+function uploadEvidenciaMiddleware(req, res, next) {
+  evidenciaUpload.single("file")(req, res, (error) => {
+    if (!error) return next();
+
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      return res.status(400).json({ error: "El archivo no puede superar 10 MB" });
+    }
+
+    return res.status(400).json({ error: error.message || "No se pudo procesar el archivo" });
+  });
+}
+
+function inferTipoEvidencia(mimetype) {
+  if (mimetype?.startsWith("image/")) return "IMAGEN";
+  if (mimetype === "application/pdf") return "PDF";
+  if (mimetype === "text/plain") return "TEXTO";
+  return "DOCUMENTO";
+}
 
 const ORDEN_SELECT = `SELECT
   o.id_orden,
@@ -1050,8 +1093,8 @@ router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async
   }
 });
 
-router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const tipo = clean(req.body?.tipo).toUpperCase();
+router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), uploadEvidenciaMiddleware, async (req, res) => {
+  const tipo = clean(req.body?.tipo).toUpperCase() || inferTipoEvidencia(req.file?.mimetype);
   const nombreArchivo = clean(req.body?.nombre_archivo);
   const referenciaUrl = clean(req.body?.referencia_url || req.body?.url_archivo);
   const descripcion = clean(req.body?.descripcion);
@@ -1060,8 +1103,8 @@ router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), async (req, res
     return res.status(400).json({ error: "tipo de evidencia no es valido" });
   }
 
-  if (!nombreArchivo && !descripcion) {
-    return res.status(400).json({ error: "nombre_archivo o descripcion es obligatorio" });
+  if (!req.file && !nombreArchivo && !referenciaUrl && !descripcion) {
+    return res.status(400).json({ error: "nombre_archivo, referencia_url o descripcion es obligatorio" });
   }
 
   try {
@@ -1071,20 +1114,56 @@ router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), async (req, res
       return res.status(access.status).json({ error: access.error });
     }
 
+    let evidenciaData = {
+      nombre_archivo: nombreArchivo || "Referencia sin archivo",
+      url_archivo: referenciaUrl || null,
+      referencia_url: referenciaUrl || null,
+      descripcion
+    };
+
+    if (req.file) {
+      const uploaded = await uploadEvidenceFile(req.file, access.orden.id_orden);
+      evidenciaData = {
+        nombre_archivo: uploaded.nombre_archivo,
+        url_archivo: uploaded.url_archivo,
+        referencia_url: uploaded.url_archivo,
+        descripcion,
+        mimetype: uploaded.mimetype,
+        size: uploaded.size
+      };
+    }
+
     const result = await db.query(
       `INSERT INTO evidencias_orden (id_orden, tipo, nombre_archivo, referencia_url, url_archivo, descripcion)
-      VALUES ($1, $2, $3, $4, $4, $5)
+      VALUES ($1, $2, $3, $4, $5, $6)
       RETURNING id_evidencia, id_orden, tipo, nombre_archivo, referencia_url, url_archivo, descripcion, fecha_creacion, fecha_subida`,
-      [access.orden.id_orden, tipo, nombreArchivo || "Referencia sin archivo", referenciaUrl || null, descripcion]
+      [
+        access.orden.id_orden,
+        tipo,
+        evidenciaData.nombre_archivo,
+        evidenciaData.referencia_url,
+        evidenciaData.url_archivo,
+        evidenciaData.descripcion
+      ]
     );
 
-    return res.status(201).json({ evidencia: result.rows[0] });
+    return res.status(201).json({
+      evidencia: {
+        ...result.rows[0],
+        mimetype: evidenciaData.mimetype || null,
+        size: evidenciaData.size || null
+      }
+    });
   } catch (error) {
-    console.error("Error registrando evidencia:", error);
-    return res.status(500).json({ error: "Error interno del servidor" });
+    const status = error.status || 500;
+    console.error("Error registrando evidencia:", {
+      message: error.message,
+      code: error.code,
+      status
+    });
+    return res.status(status).json({ error: error.message || "Error interno del servidor" });
   }
 });
-
 router.post("/:id/solicitar-garantia", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
   const motivoRaw = req.body?.motivo_solicitud ?? req.body?.observacion ?? "";
   const observacion = clean(motivoRaw) || "Solicitud de garantia levantada desde orden de servicio";

@@ -1,16 +1,31 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import StatusBadge from "./StatusBadge.jsx";
-import api from "../services/api";
+import api, { createEvidenciaManual, uploadEvidenciaOrden } from "../services/api";
 import { formatCurrency, formatDate } from "../utils/format.js";
 
 const initialRepuestoForm = { id_repuesto: "", nombre_repuesto: "", cantidad: "1", precio_unitario: "0", cubierto_garantia: "false", observacion: "" };
 const initialEvidenciaForm = { tipo: "IMAGEN", nombre_archivo: "", url_archivo: "", descripcion: "" };
+const initialEvidenciaUploadForm = { tipo: "IMAGEN", descripcion: "", file: null };
+const MAX_EVIDENCE_FILE_SIZE = 10 * 1024 * 1024;
+const ALLOWED_EVIDENCE_FILE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "application/pdf",
+  "text/plain",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+]);
 const initialGarantiaForm = { observacion: "" };
 const initialDecisionForm = { garantia_aprobada_por_admin: "true", observacion_admin: "" };
 
 function DetailItem({ label, children }) {
   return <div className="detail-box"><span>{label}</span><strong>{children || "Sin dato"}</strong></div>;
+}
+
+function isHttpUrl(value) {
+  return /^https?:\/\//i.test(value || "");
 }
 
 function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
@@ -27,6 +42,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
   const [informeForm, setInformeForm] = useState({ diagnostico: "", informe_tecnico: "", mano_obra: "0" });
   const [cotizacionForm, setCotizacionForm] = useState({ mano_obra: "0", estado: "BORRADOR", observacion: "" });
   const [evidenciaForm, setEvidenciaForm] = useState(initialEvidenciaForm);
+  const [evidenciaUploadForm, setEvidenciaUploadForm] = useState(initialEvidenciaUploadForm);
   const [garantiaForm, setGarantiaForm] = useState(initialGarantiaForm);
   const [decisionForm, setDecisionForm] = useState(initialDecisionForm);
 
@@ -77,6 +93,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
     setError("");
     setRepuestoForm(initialRepuestoForm);
     setEvidenciaForm(initialEvidenciaForm);
+    setEvidenciaUploadForm(initialEvidenciaUploadForm);
     setGarantiaForm(initialGarantiaForm);
     loadDetalle();
     loadCatalogoRepuestos();
@@ -169,7 +186,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
     setError("");
     setSuccess("");
     try {
-      await api.post(`/ordenes/${idOrden}/evidencias`, {
+      await createEvidenciaManual(idOrden, {
         tipo: evidenciaForm.tipo,
         nombre_archivo: evidenciaForm.nombre_archivo.trim(),
         referencia_url: evidenciaForm.url_archivo.trim(),
@@ -184,6 +201,42 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
     }
   }
 
+  async function handleUploadEvidencia(event) {
+    event.preventDefault();
+    setError("");
+    setSuccess("");
+
+    if (!evidenciaUploadForm.file) {
+      setError("Selecciona un archivo para subir.");
+      return;
+    }
+
+    if (evidenciaUploadForm.file.size > MAX_EVIDENCE_FILE_SIZE) {
+      setError("El archivo no puede superar 10 MB.");
+      return;
+    }
+
+    if (!ALLOWED_EVIDENCE_FILE_TYPES.has(evidenciaUploadForm.file.type)) {
+      setError("Tipo de archivo no permitido. Usa JPG, PNG, WEBP, PDF, TXT, DOC o DOCX.");
+      return;
+    }
+
+    setSaving("evidencia-upload");
+    try {
+      const formData = new FormData();
+      formData.append("file", evidenciaUploadForm.file);
+      formData.append("tipo", evidenciaUploadForm.tipo);
+      formData.append("descripcion", evidenciaUploadForm.descripcion.trim());
+
+      await uploadEvidenciaOrden(idOrden, formData);
+      setEvidenciaUploadForm(initialEvidenciaUploadForm);
+      await afterMutation("Evidencia subida correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo subir la evidencia.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleSolicitarGarantia(event) {
     event.preventDefault();
     setSaving("garantia");
@@ -305,10 +358,42 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                 </div> : null}
 
                 {activeTab === "evidencias" ? <div className="detail-card">
-                  {detalle.evidencias.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Tipo</th><th>Archivo</th><th>Referencia</th><th>Descripcion</th><th>Fecha</th></tr></thead><tbody>{detalle.evidencias.map((evidencia) => <tr key={evidencia.id_evidencia}><td>{evidencia.tipo}</td><td>{evidencia.nombre_archivo}</td><td>{evidencia.url_archivo || evidencia.referencia_url || "Sin referencia"}</td><td>{evidencia.descripcion || "Sin descripcion"}</td><td className="date-cell">{formatDate(evidencia.fecha_subida || evidencia.fecha_creacion)}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay evidencias registradas.</p>}
-                  {!readOnly ? <form className="row g-3 mt-2" onSubmit={handleAddEvidencia}><div className="col-md-3"><label className="form-label">Tipo</label><select className="form-select" value={evidenciaForm.tipo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, tipo: event.target.value }))}><option>IMAGEN</option><option>PDF</option><option>LINK</option><option>TEXTO</option></select></div><div className="col-md-3"><label className="form-label">Nombre archivo</label><input className="form-control" value={evidenciaForm.nombre_archivo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, nombre_archivo: event.target.value }))} /></div><div className="col-md-3"><label className="form-label">URL o referencia</label><input className="form-control" value={evidenciaForm.url_archivo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, url_archivo: event.target.value }))} /></div><div className="col-md-3"><label className="form-label">Descripcion</label><input className="form-control" value={evidenciaForm.descripcion} onChange={(event) => setEvidenciaForm((current) => ({ ...current, descripcion: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "evidencia"}>{saving === "evidencia" ? "Guardando..." : "Agregar evidencia"}</button></div></form> : null}
-                </div> : null}
-              </> : null}
+                  <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
+                    <h3 className="h6 mb-0">Evidencias</h3>
+                    <span className="table-count">{detalle.evidencias.length} registros</span>
+                  </div>
+
+                  {detalle.evidencias.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Tipo</th><th>Archivo</th><th>Referencia</th><th>Descripcion</th><th>Fecha</th></tr></thead><tbody>{detalle.evidencias.map((evidencia) => {
+                    const evidenciaUrl = evidencia.url_archivo || evidencia.referencia_url;
+                    return <tr key={evidencia.id_evidencia}><td>{evidencia.tipo}</td><td>{evidencia.nombre_archivo}</td><td>{isHttpUrl(evidenciaUrl) ? <a className="btn btn-outline-primary btn-sm" href={evidenciaUrl} target="_blank" rel="noreferrer">Ver archivo</a> : (evidenciaUrl || "Sin referencia")}</td><td>{evidencia.descripcion || "Sin descripcion"}</td><td className="date-cell">{formatDate(evidencia.fecha_subida || evidencia.fecha_creacion)}</td></tr>;
+                  })}</tbody></table></div> : <p className="empty-state">No hay evidencias registradas.</p>}
+
+                  {!readOnly ? <div className="row g-3 mt-2">
+                    <div className="col-lg-6">
+                      <form className="evidence-form border rounded-2 p-3 h-100" onSubmit={handleUploadEvidencia}>
+                        <h4 className="h6 mb-3">Subir archivo real</h4>
+                        <div className="row g-3">
+                          <div className="col-md-4"><label className="form-label">Tipo</label><select className="form-select" value={evidenciaUploadForm.tipo} onChange={(event) => setEvidenciaUploadForm((current) => ({ ...current, tipo: event.target.value }))}><option>IMAGEN</option><option>PDF</option><option>DOCUMENTO</option><option>TEXTO</option></select></div>
+                          <div className="col-md-8"><label className="form-label">Archivo</label><input className="form-control" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.txt,.doc,.docx,image/jpeg,image/png,image/webp,application/pdf,text/plain,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setEvidenciaUploadForm((current) => ({ ...current, file: event.target.files?.[0] || null }))} /></div>
+                          <div className="col-12"><label className="form-label">Descripcion</label><input className="form-control" value={evidenciaUploadForm.descripcion} onChange={(event) => setEvidenciaUploadForm((current) => ({ ...current, descripcion: event.target.value }))} /></div>
+                          <div className="col-12"><button className="btn btn-primary" disabled={saving === "evidencia-upload"}>{saving === "evidencia-upload" ? "Subiendo..." : "Subir evidencia"}</button></div>
+                        </div>
+                      </form>
+                    </div>
+                    <div className="col-lg-6">
+                      <form className="evidence-form border rounded-2 p-3 h-100" onSubmit={handleAddEvidencia}>
+                        <h4 className="h6 mb-3">Registrar referencia manual</h4>
+                        <div className="row g-3">
+                          <div className="col-md-4"><label className="form-label">Tipo</label><select className="form-select" value={evidenciaForm.tipo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, tipo: event.target.value }))}><option>IMAGEN</option><option>PDF</option><option>LINK</option><option>TEXTO</option><option>DOCUMENTO</option></select></div>
+                          <div className="col-md-8"><label className="form-label">Nombre archivo</label><input className="form-control" value={evidenciaForm.nombre_archivo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, nombre_archivo: event.target.value }))} /></div>
+                          <div className="col-12"><label className="form-label">URL o referencia</label><input className="form-control" value={evidenciaForm.url_archivo} onChange={(event) => setEvidenciaForm((current) => ({ ...current, url_archivo: event.target.value }))} /></div>
+                          <div className="col-12"><label className="form-label">Descripcion</label><input className="form-control" value={evidenciaForm.descripcion} onChange={(event) => setEvidenciaForm((current) => ({ ...current, descripcion: event.target.value }))} /></div>
+                          <div className="col-12"><button className="btn btn-outline-primary" disabled={saving === "evidencia"}>{saving === "evidencia" ? "Guardando..." : "Registrar referencia"}</button></div>
+                        </div>
+                      </form>
+                    </div>
+                  </div> : null}
+                </div> : null}              </> : null}
             </div>
           </div>
         </div>
