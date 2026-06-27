@@ -16,6 +16,8 @@ Componentes principales:
 - Security Groups separados por responsabilidad.
 - Azure Blob Storage externo para evidencias, configurado por variables de entorno.
 
+CloudFormation crea desde cero la VPC, las dos subredes, el Bastion, EC2 App 1, EC2 App 2, el Application Load Balancer, el Target Group y RDS. El Bastion recibe una IP publica temporal apropiada para el laboratorio; en produccion se podria asociar una Elastic IP para mantener una direccion estable.
+
 ## Diagrama textual
 
 ```text
@@ -73,7 +75,7 @@ Backend usa AZURE_STORAGE_* para evidencias
 
    - CloudFormation crea VPC, subredes, Security Groups, EC2 App 1, EC2 App 2, ALB, RDS y Bastion.
    - Cada EC2 App clona el repositorio desde `GitHubRepoUrl`.
-   - Cada EC2 App crea `backend/.env` con variables del stack.
+   - Cada EC2 App crea `backend/.env` con el endpoint de RDS, SSL de laboratorio y el DNS publico del ALB.
    - Cada EC2 App ejecuta `docker compose -f docker-compose.prod.yml up -d --build`.
    - El Load Balancer entrega una URL publica en el output `LoadBalancerUrl`.
    - RDS entrega un endpoint privado en `RdsEndpointAddress`.
@@ -109,10 +111,11 @@ Completar al desplegar:
 - `PublicSubnet2Cidr`: por defecto `10.30.2.0/24`.
 - `GitHubRepoUrl`: URL HTTPS del repositorio con este codigo.
 - `JwtSecret`: secreto JWT largo. No subirlo a GitHub.
-- `FrontendUrl`: dominio publico o URL esperada del frontend. Si aun no existe dominio, puedes dejar el valor temporal y usar `/api` via Nginx.
 - `AzureStorageConnectionString`: entregado por el equipo/companero Azure. No subirlo a GitHub.
 - `AzureStorageContainer`: por defecto `evidencias`.
 - `AzureStoragePublicBaseUrl`: por ejemplo `https://cuenta.blob.core.windows.net`.
+
+`FRONTEND_URL` no es un parametro manual: CloudFormation lo genera como `http://<DNS del ALB>` dentro de `backend/.env`. La conexion generada a RDS termina en `?sslmode=no-verify`, lo que exige SSL sin validar la cadena del certificado para esta PoC de laboratorio. En produccion se debe instalar/configurar la CA de RDS y validar el certificado.
 
 
 ## Repositorio privado
@@ -148,7 +151,6 @@ aws cloudformation deploy `
     InstanceType=t3.micro `
     GitHubRepoUrl=https://github.com/USUARIO/serialcare-cloud.git `
     JwtSecret=CAMBIAR_SECRETO_LARGO `
-    FrontendUrl=http://localhost:8080 `
     AzureStorageConnectionString="" `
     AzureStorageContainer=evidencias `
     AzureStoragePublicBaseUrl=""
@@ -226,7 +228,7 @@ docker compose -f docker-compose.prod.yml logs --tail=80 frontend
 
 ## Probar Load Balancer
 
-Abrir en navegador:
+Abre en el navegador el valor del output `LoadBalancerUrl`:
 
 ```text
 http://LOAD_BALANCER_DNS
@@ -290,8 +292,10 @@ Si `AZURE_STORAGE_CONNECTION_STRING` queda vacia:
 - ALB permite HTTP 80 desde internet.
 - EC2 App permite HTTP 80 solo desde el Security Group del ALB.
 - Bastion permite SSH 22 solo desde `AllowedSSHIp`.
+- `AllowedSSHIp` debe identificar una unica IP publica con mascara `/32`.
 - EC2 App permite SSH 22 solo desde el Security Group del Bastion.
 - RDS permite PostgreSQL 5432 solo desde el Security Group de EC2 App.
+- RDS usa SSL con `sslmode=no-verify` para el laboratorio.
 - RDS no queda abierto a internet.
 - No se incluyen credenciales reales en el repositorio.
 
@@ -301,4 +305,5 @@ Si `AZURE_STORAGE_CONNECTION_STRING` queda vacia:
 - Usar `AllowedSSHIp` con `/32`. No usar `0.0.0.0/0`.
 - Configurar valores reales de Azure Blob cuando existan.
 - Inicializar RDS manualmente con `schema.sql` y `seed.sql` una vez creado el stack.
-- Si usas un dominio real, apuntarlo al ALB y actualizar `FrontendUrl` si corresponde.
+- Para un despliegue nuevo, crea el stack con esta version de la plantilla y usa `LoadBalancerUrl`; no es necesario corregir el `.env` dentro de las EC2.
+- En un stack ya existente, actualizar solo el `UserData` no garantiza que cloud-init vuelva a ejecutarlo. Para aplicar estas correcciones de arranque, recrea el stack o reemplaza ambas EC2 App de forma controlada.

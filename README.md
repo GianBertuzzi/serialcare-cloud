@@ -136,11 +136,13 @@ Limites de archivos:
 
 Arquitectura objetivo:
 
-- AWS Application Load Balancer recibe trafico HTTP/HTTPS.
+- CloudFormation crea la VPC, dos subredes publicas, Bastion, EC2 App 1, EC2 App 2, Application Load Balancer, Target Group y RDS PostgreSQL.
+- AWS Application Load Balancer recibe trafico HTTP.
 - EC2 App 1 y EC2 App 2 ejecutan Docker con backend/frontend.
 - Amazon RDS PostgreSQL reemplaza al contenedor `postgres` en produccion.
 - Security Groups limitan trafico: ALB hacia EC2, EC2 hacia RDS, SSH solo desde Bastion.
-- Bastion Host / Jump Server se usa para administracion SSH segura.
+- El acceso SSH al Bastion se permite solo desde `AllowedSSHIp` en formato `/32`; las EC2 App aceptan SSH solo desde el Bastion.
+- El Bastion usa una IP publica temporal en el laboratorio. En produccion se podria asociar una Elastic IP.
 - Azure Blob Storage almacena evidencias adjuntas de ordenes.
 
 Variables esperadas en EC2/backend:
@@ -148,13 +150,17 @@ Variables esperadas en EC2/backend:
 ```env
 PORT=3000
 NODE_ENV=production
-DATABASE_URL=postgresql://usuario:password@rds-endpoint:5432/serialcare_db
+DATABASE_URL=postgresql://usuario:password@rds-endpoint:5432/serialcare_db?sslmode=no-verify
 JWT_SECRET=secreto_largo_y_unico
-FRONTEND_URL=https://dominio-o-alb
+FRONTEND_URL=http://DNS_PUBLICO_DEL_ALB
 AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=...
 AZURE_STORAGE_CONTAINER=evidencias
 AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
 ```
+
+CloudFormation genera estas variables en cada EC2. `FRONTEND_URL` se construye automaticamente con el DNS publico del ALB y RDS se conecta por SSL con `sslmode=no-verify`, configuracion aceptada para este laboratorio. En produccion se debe validar el certificado con una CA de confianza.
+
+Las variables `AZURE_STORAGE_*` son opcionales y se entregan externamente al desplegar; no se guardan secretos reales en el repositorio.
 
 
 
@@ -170,9 +176,11 @@ AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
 
 ## Despliegue AWS
 
-La infraestructura AWS queda preparada en `infrastructure/cloudformation-serialcare.yaml` con VPC, dos subredes publicas, Application Load Balancer, dos EC2 App con Docker, Bastion Host, Security Groups y RDS PostgreSQL.
+La infraestructura AWS queda preparada en `infrastructure/cloudformation-serialcare.yaml` con VPC, dos subredes publicas, Application Load Balancer, Target Group, dos EC2 App con Docker, Bastion Host, Security Groups y RDS PostgreSQL.
 
 Para produccion se usa `docker-compose.prod.yml`, que levanta solo backend y frontend. La base de datos productiva es Amazon RDS, no un contenedor PostgreSQL local.
+
+Al finalizar el despliegue, la aplicacion queda disponible en el output `LoadBalancerUrl`. El ALB comprueba cada nodo mediante `GET /api/health`.
 
 Documentacion paso a paso:
 
@@ -186,7 +194,7 @@ Puntos clave:
 - Docker produccion: `docker compose -f docker-compose.prod.yml up -d --build`.
 - Multicloud: evidencias en Azure Blob Storage mediante `AZURE_STORAGE_*`.
 - Alta disponibilidad: ALB balancea entre EC2 App 1 y EC2 App 2 usando `/api/health`.
-- Administracion segura: SSH entra por Bastion Host y luego a las EC2 App por IP privada.
+- Administracion segura: SSH entra por Bastion Host solo desde `AllowedSSHIp /32` y luego a las EC2 App por IP privada.
 
 ## Validacion Manual
 

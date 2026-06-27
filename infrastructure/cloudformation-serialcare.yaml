@@ -69,11 +69,6 @@ Parameters:
     MinLength: 16
     AllowedPattern: "^[A-Za-z0-9_+=,.:;@%/-]+$"
 
-  FrontendUrl:
-    Type: String
-    Description: Public frontend URL allowed by backend CORS. Use custom domain or ALB URL when known.
-    Default: http://localhost:8080
-
   AzureStorageConnectionString:
     Type: String
     Description: Azure Blob Storage connection string for evidence uploads.
@@ -312,7 +307,7 @@ Resources:
           #!/bin/bash
           set -eux
           dnf update -y
-          dnf install -y docker git curl
+          dnf install -y docker git
           systemctl enable --now docker
           mkdir -p /usr/local/lib/docker/cli-plugins
           if ! docker compose version >/dev/null 2>&1; then
@@ -325,9 +320,9 @@ Resources:
           cat > backend/.env <<'ENVEOF'
           PORT=3000
           NODE_ENV=production
-          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}
+          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}?sslmode=no-verify
           JWT_SECRET=${JwtSecret}
-          FRONTEND_URL=${FrontendUrl}
+          FRONTEND_URL=http://${SerialCareLoadBalancer.DNSName}
           AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
           AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
           AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
@@ -351,7 +346,7 @@ Resources:
           #!/bin/bash
           set -eux
           dnf update -y
-          dnf install -y docker git curl
+          dnf install -y docker git
           systemctl enable --now docker
           mkdir -p /usr/local/lib/docker/cli-plugins
           if ! docker compose version >/dev/null 2>&1; then
@@ -364,9 +359,9 @@ Resources:
           cat > backend/.env <<'ENVEOF'
           PORT=3000
           NODE_ENV=production
-          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}
+          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}?sslmode=no-verify
           JWT_SECRET=${JwtSecret}
-          FRONTEND_URL=${FrontendUrl}
+          FRONTEND_URL=http://${SerialCareLoadBalancer.DNSName}
           AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
           AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
           AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
