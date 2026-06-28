@@ -292,6 +292,7 @@ Resources:
 
   AppInstance1:
     Type: AWS::EC2::Instance
+    DependsOn: SerialCareDB
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: !Ref InstanceType
@@ -305,7 +306,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -eux
+          set -eu
           dnf update -y
           dnf install -y docker git
           systemctl enable --now docker
@@ -327,6 +328,57 @@ Resources:
           AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
           AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
           ENVEOF
+
+          DB_INIT_LOG=/var/log/serialcare-db-init.log
+          touch "$DB_INIT_LOG"
+
+          initialize_database() {
+            echo "[SerialCare DB] Preparando inicializacion automatica."
+
+            DATABASE_URL="$(sed -n 's/^DATABASE_URL=//p' backend/.env)"
+            if [ -z "$DATABASE_URL" ]; then
+              echo "[SerialCare DB] ERROR: DATABASE_URL no existe en backend/.env."
+              return 1
+            fi
+
+            PSQL_DATABASE_URL="$(printf '%s' "$DATABASE_URL" | sed 's/sslmode=no-verify/sslmode=require/')"
+            if [ "$PSQL_DATABASE_URL" = "$DATABASE_URL" ]; then
+              echo "[SerialCare DB] ERROR: DATABASE_URL no contiene sslmode=no-verify."
+              return 1
+            fi
+
+            docker pull postgres:16-alpine || return 1
+
+            attempt=1
+            max_attempts=30
+            until docker run --rm postgres:16-alpine \
+              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 1;" >/dev/null 2>&1; do
+              if [ "$attempt" -ge "$max_attempts" ]; then
+                echo "[SerialCare DB] ERROR: PostgreSQL no estuvo disponible despues de $max_attempts intentos."
+                return 1
+              fi
+
+              echo "[SerialCare DB] PostgreSQL aun no disponible. Intento $attempt/$max_attempts; reintentando en 10 segundos."
+              attempt=$((attempt + 1))
+              sleep 10
+            done
+
+            echo "[SerialCare DB] PostgreSQL disponible. Ejecutando database/schema.sql."
+            docker run --rm -i postgres:16-alpine \
+              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 < database/schema.sql || return 1
+
+            echo "[SerialCare DB] Esquema cargado. Ejecutando database/seed.sql."
+            docker run --rm -i postgres:16-alpine \
+              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 < database/seed.sql || return 1
+          }
+
+          if initialize_database >>"$DB_INIT_LOG" 2>&1; then
+            echo "[SerialCare DB] Inicializacion completada correctamente." | tee -a "$DB_INIT_LOG"
+          else
+            echo "[SerialCare DB] ERROR: fallo la inicializacion. Revisa $DB_INIT_LOG y /var/log/cloud-init-output.log." | tee -a "$DB_INIT_LOG" >&2
+            exit 1
+          fi
+
           docker compose -f docker-compose.prod.yml up -d --build
 
   AppInstance2:
@@ -344,7 +396,7 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -eux
+          set -eu
           dnf update -y
           dnf install -y docker git
           systemctl enable --now docker

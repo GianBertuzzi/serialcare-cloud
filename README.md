@@ -182,6 +182,8 @@ Para produccion se usa `docker-compose.prod.yml`, que levanta solo backend y fro
 
 Al finalizar el despliegue, la aplicacion queda disponible en el output `LoadBalancerUrl`. El ALB comprueba cada nodo mediante `GET /api/health`.
 
+Durante el primer arranque, EC2 App 1 espera a RDS e inicializa automaticamente `database/schema.sql` y luego `database/seed.sql` con `postgres:16-alpine`. EC2 App 2 solo levanta frontend y backend. El resultado queda en `/var/log/serialcare-db-init.log` de App 1.
+
 Documentacion paso a paso:
 
 ```text

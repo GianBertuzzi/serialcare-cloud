@@ -171,22 +171,20 @@ Outputs importantes:
 - `App2PrivateIp`
 - `RdsEndpointAddress`
 
-## Inicializar RDS una vez
+## Inicializacion automatica de RDS
 
-El stack crea RDS, pero no ejecuta `schema.sql` ni `seed.sql` automaticamente para evitar que ambas EC2 ejecuten la carga al mismo tiempo. Inicializa la base una sola vez desde Bastion o desde una EC2 App.
+EC2 App 1 inicializa RDS durante su primer arranque. Espera a PostgreSQL con hasta 30 intentos, usa `postgres:16-alpine` para ejecutar `SELECT 1` y, cuando la conexion esta disponible, carga primero `database/schema.sql` y luego `database/seed.sql`.
 
-Desde una EC2 App:
+El backend conserva `sslmode=no-verify` en `backend/.env`. Solo la URL temporal usada por `psql` cambia a `sslmode=require`. EC2 App 2 no ejecuta scripts SQL; unicamente levanta frontend y backend.
+
+La salida queda en App 1:
 
 ```bash
-cd /opt/serialcare-cloud
-set -a
-source backend/.env
-set +a
-docker run --rm -i postgres:16-alpine psql "$DATABASE_URL" < database/schema.sql
-docker run --rm -i postgres:16-alpine psql "$DATABASE_URL" < database/seed.sql
+sudo tail -n 100 /var/log/serialcare-db-init.log
+sudo tail -n 100 /var/log/cloud-init-output.log
 ```
 
-Solo repite estos comandos si vas a reiniciar la base de datos o si sabes que los scripts son compatibles con volver a ejecutarse.
+En un stack nuevo no es necesario inicializar RDS manualmente.
 
 ## Ingresar por Bastion
 
@@ -304,6 +302,5 @@ Si `AZURE_STORAGE_CONNECTION_STRING` queda vacia:
 - Configurar un `KeyName` existente antes de desplegar.
 - Usar `AllowedSSHIp` con `/32`. No usar `0.0.0.0/0`.
 - Configurar valores reales de Azure Blob cuando existan.
-- Inicializar RDS manualmente con `schema.sql` y `seed.sql` una vez creado el stack.
 - Para un despliegue nuevo, crea el stack con esta version de la plantilla y usa `LoadBalancerUrl`; no es necesario corregir el `.env` dentro de las EC2.
 - En un stack ya existente, actualizar solo el `UserData` no garantiza que cloud-init vuelva a ejecutarlo. Para aplicar estas correcciones de arranque, recrea el stack o reemplaza ambas EC2 App de forma controlada.
