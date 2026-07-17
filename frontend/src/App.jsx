@@ -8,6 +8,7 @@ import AdminClientes from "./pages/admin/AdminClientes.jsx";
 import AdminModelosPrecios from "./pages/admin/AdminModelosPrecios.jsx";
 import AdminRepuestos from "./pages/admin/AdminRepuestos.jsx";
 import AdminTecnicos from "./pages/admin/AdminTecnicos.jsx";
+import AdminRecepcionistas from "./pages/admin/AdminRecepcionistas.jsx";
 import AdminGarantias from "./pages/admin/AdminGarantias.jsx";
 import AdminConfiguracion from "./pages/admin/AdminConfiguracion.jsx";
 import TecnicoDashboard from "./pages/TecnicoDashboard.jsx";
@@ -34,6 +35,7 @@ function App() {
       <Route path="/admin/modelos-precios" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminModelosPrecios /></ProtectedRoute>} />
       <Route path="/admin/repuestos" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminRepuestos /></ProtectedRoute>} />
       <Route path="/admin/tecnicos" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminTecnicos /></ProtectedRoute>} />
+      <Route path="/admin/recepcionistas" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminRecepcionistas /></ProtectedRoute>} />
       <Route path="/admin/garantias" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminGarantias /></ProtectedRoute>} />
       <Route path="/admin/configuracion" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminConfiguracion /></ProtectedRoute>} />
 

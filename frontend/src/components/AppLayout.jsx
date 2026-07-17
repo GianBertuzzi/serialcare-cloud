@@ -15,6 +15,7 @@ const menuByRole = {
     { label: "Tipos de maquina", to: "/admin/modelos-precios" },
     { label: "Repuestos", to: "/admin/repuestos" },
     { label: "Tecnicos", to: "/admin/tecnicos" },
+    { label: "Recepcionistas", to: "/admin/recepcionistas" },
     { label: "Garantias", to: "/admin/garantias" },
     { label: "Configuracion", to: "/admin/configuracion" }
   ],
