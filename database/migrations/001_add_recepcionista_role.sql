@@ -1,0 +1,3 @@
+INSERT INTO roles (nombre_rol)
+VALUES ('RECEPCIONISTA')
+ON CONFLICT (nombre_rol) DO NOTHING;
