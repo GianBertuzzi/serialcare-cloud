@@ -23,13 +23,13 @@ const menuByRole = {
     { label: "Dashboard", to: "/tecnico" },
     { label: "Ordenes asignadas", to: "/tecnico/ordenes" },
     { label: "Productos", to: "/tecnico/productos" },
-    { label: "Clientes", to: "/tecnico/clientes" },
     { label: "Repuestos", to: "/tecnico/repuestos" },
     { label: "Garantias", to: "/tecnico/garantias" },
     { label: "Configuracion", to: "/tecnico/configuracion" }
   ],
   RECEPCIONISTA: [
-    { label: "Dashboard", to: "/recepcionista" }
+    { label: "Dashboard", to: "/recepcionista" },
+    { label: "Clientes", to: "/recepcionista/clientes" }
   ],
   CLIENTE: [
     { label: "Dashboard", to: "/cliente" },

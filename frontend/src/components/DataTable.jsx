@@ -61,6 +61,7 @@ function DataTable({
   columns,
   getRowKey,
   searchPlaceholder = "Buscar...",
+  showSearch = true,
   emptyMessage = "No hay registros.",
   loading = false,
   loadingMessage = "Cargando...",
@@ -150,13 +151,15 @@ function DataTable({
           </p>
         </div>
         <div className="table-toolbar-actions">
-          <input
-            className="form-control table-search"
-            type="search"
-            value={search}
-            onChange={handleSearchChange}
-            placeholder={searchPlaceholder}
-          />
+          {showSearch ? (
+            <input
+              className="form-control table-search"
+              type="search"
+              value={search}
+              onChange={handleSearchChange}
+              placeholder={searchPlaceholder}
+            />
+          ) : null}
           {toolbarAction ? (
             <button
               className={toolbarAction.className || "btn btn-outline-secondary"}

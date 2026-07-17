@@ -20,19 +20,6 @@ const configs = {
       { key: "fecha", label: "Fecha", searchValue: (p) => formatDate(p.fecha_registro), sortValue: (p) => p.fecha_registro, render: (p) => formatDate(p.fecha_registro) }
     ]
   },
-  clientes: {
-    title: "Consulta clientes",
-    endpoint: "/clientes",
-    collection: "clientes",
-    search: "Buscar por nombre, RUT, telefono o email",
-    columns: [
-      { key: "nombre", label: "Nombre", searchValue: (c) => c.nombre, render: (c) => <strong>{c.nombre}</strong> },
-      { key: "rut", label: "RUT", searchValue: (c) => c.rut || "", render: (c) => c.rut || "Sin RUT" },
-      { key: "telefono", label: "Telefono", searchValue: (c) => c.telefono || "", render: (c) => c.telefono || "Sin telefono" },
-      { key: "email", label: "Email", searchValue: (c) => c.email || "", render: (c) => c.email || "Sin email" },
-      { key: "maquinas", label: "Maquinas", searchValue: (c) => c.cantidad_maquinas, sortValue: (c) => Number(c.cantidad_maquinas || 0) }
-    ]
-  },
   repuestos: {
     title: "Consulta repuestos",
     endpoint: "/repuestos",

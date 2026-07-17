@@ -16,6 +16,7 @@ import TecnicoOrdenes from "./pages/tecnico/TecnicoOrdenes.jsx";
 import TecnicoConsultaPage from "./pages/tecnico/TecnicoConsultaPage.jsx";
 import TecnicoConfiguracion from "./pages/tecnico/TecnicoConfiguracion.jsx";
 import RecepcionistaDashboard from "./pages/RecepcionistaDashboard.jsx";
+import RecepcionistaClientes from "./pages/recepcionista/RecepcionistaClientes.jsx";
 import ClienteDashboard from "./pages/ClienteDashboard.jsx";
 import MarcaDashboard from "./pages/MarcaDashboard.jsx";
 import MarcaSucursales from "./pages/marca/MarcaSucursales.jsx";
@@ -42,12 +43,12 @@ function App() {
       <Route path="/tecnico" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoDashboard /></ProtectedRoute>} />
       <Route path="/tecnico/ordenes" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoOrdenes /></ProtectedRoute>} />
       <Route path="/tecnico/productos" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoConsultaPage type="productos" /></ProtectedRoute>} />
-      <Route path="/tecnico/clientes" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoConsultaPage type="clientes" /></ProtectedRoute>} />
       <Route path="/tecnico/repuestos" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoConsultaPage type="repuestos" /></ProtectedRoute>} />
       <Route path="/tecnico/garantias" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoConsultaPage type="garantias" /></ProtectedRoute>} />
       <Route path="/tecnico/configuracion" element={<ProtectedRoute allowedRoles={["TECNICO"]}><TecnicoConfiguracion /></ProtectedRoute>} />
 
       <Route path="/recepcionista" element={<ProtectedRoute allowedRoles={["RECEPCIONISTA"]}><RecepcionistaDashboard /></ProtectedRoute>} />
+      <Route path="/recepcionista/clientes" element={<ProtectedRoute allowedRoles={["RECEPCIONISTA"]}><RecepcionistaClientes /></ProtectedRoute>} />
 
       <Route path="/cliente" element={<ProtectedRoute allowedRoles={["CLIENTE"]}><ClienteDashboard /></ProtectedRoute>} />
 
