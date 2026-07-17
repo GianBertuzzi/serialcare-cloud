@@ -17,7 +17,7 @@ function clean(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-const TECNICO_SELECT = `SELECT
+const RECEPCIONISTA_SELECT = `SELECT
   u.id_usuario,
   u.nombre,
   u.email,
@@ -38,16 +38,16 @@ router.get("/", async (req, res) => {
     }
 
     const result = await db.query(
-      `${TECNICO_SELECT}
-      WHERE r.nombre_rol = 'TECNICO'
+      `${RECEPCIONISTA_SELECT}
+      WHERE r.nombre_rol = 'RECEPCIONISTA'
         AND u.id_sucursal = $1
       ORDER BY u.fecha_creacion DESC, u.id_usuario DESC`,
       [adminSucursal.id_sucursal]
     );
 
-    return res.json({ tecnicos: result.rows });
+    return res.json({ recepcionistas: result.rows });
   } catch (error) {
-    console.error("Error listando tecnicos:", error);
+    console.error("Error listando recepcionistas:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
@@ -65,8 +65,8 @@ router.post("/", async (req, res) => {
     return res.status(400).json({ error: "email es obligatorio" });
   }
 
-  if (!password || password.length < 6) {
-    return res.status(400).json({ error: "password debe tener minimo 6 caracteres" });
+  if (!password || password.length < 8) {
+    return res.status(400).json({ error: "password debe tener minimo 8 caracteres" });
   }
 
   try {
@@ -77,11 +77,11 @@ router.post("/", async (req, res) => {
     }
 
     const rolResult = await db.query(
-      "SELECT id_rol FROM roles WHERE nombre_rol = 'TECNICO' LIMIT 1"
+      "SELECT id_rol FROM roles WHERE nombre_rol = 'RECEPCIONISTA' LIMIT 1"
     );
 
     if (rolResult.rows.length === 0) {
-      return res.status(500).json({ error: "Rol TECNICO no configurado" });
+      return res.status(500).json({ error: "Rol RECEPCIONISTA no configurado" });
     }
 
     const hash = await bcrypt.hash(password, 10);
@@ -92,20 +92,48 @@ router.post("/", async (req, res) => {
       [nombre, email, hash, rolResult.rows[0].id_rol, adminSucursal.id_sucursal]
     );
 
-    return res.status(201).json({ tecnico: result.rows[0] });
+    return res.status(201).json({ recepcionista: result.rows[0] });
   } catch (error) {
     if (error.code === "23505") {
       return res.status(409).json({ error: "Ya existe un usuario con ese correo" });
     }
 
-    console.error("Error creando tecnico:", error);
+    console.error("Error creando recepcionista:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
 router.put("/:id", async (req, res) => {
-  const nombre = clean(req.body?.nombre) || null;
-  const estado = clean(req.body?.estado).toUpperCase() || null;
+  const idRecepcionista = Number(req.params.id);
+  const camposPermitidos = new Set(["nombre", "estado"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter(
+    (campo) => !camposPermitidos.has(campo)
+  );
+
+  if (!Number.isInteger(idRecepcionista) || idRecepcionista <= 0) {
+    return res.status(400).json({ error: "id de recepcionista invalido" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite modificar nombre y estado" });
+  }
+
+  const tieneNombre = Object.prototype.hasOwnProperty.call(req.body || {}, "nombre");
+  const tieneEstado = Object.prototype.hasOwnProperty.call(req.body || {}, "estado");
+  const nombre = tieneNombre ? clean(req.body.nombre) : null;
+  const estado = tieneEstado ? clean(req.body.estado).toUpperCase() : null;
+
+  if (!tieneNombre && !tieneEstado) {
+    return res.status(400).json({ error: "nombre o estado es obligatorio" });
+  }
+
+  if (tieneNombre && !nombre) {
+    return res.status(400).json({ error: "nombre no puede estar vacio" });
+  }
+
+  if (tieneEstado && !["ACTIVO", "INACTIVO"].includes(estado)) {
+    return res.status(400).json({ error: "estado debe ser ACTIVO o INACTIVO" });
+  }
 
   try {
     const adminSucursal = await getAdminSucursal(req.usuario.id_usuario);
@@ -120,20 +148,22 @@ router.put("/:id", async (req, res) => {
           estado = COALESCE($2, u.estado)
       FROM roles r
       WHERE u.id_rol = r.id_rol
-        AND r.nombre_rol = 'TECNICO'
+        AND r.nombre_rol = 'RECEPCIONISTA'
         AND u.id_usuario = $3
         AND u.id_sucursal = $4
       RETURNING u.id_usuario, u.nombre, u.email, u.id_sucursal, u.estado, u.fecha_creacion`,
-      [nombre, estado, req.params.id, adminSucursal.id_sucursal]
+      [nombre, estado, idRecepcionista, adminSucursal.id_sucursal]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Tecnico no encontrado para la sucursal" });
+      return res.status(404).json({
+        error: "Recepcionista no encontrado para la sucursal"
+      });
     }
 
-    return res.json({ tecnico: result.rows[0] });
+    return res.json({ recepcionista: result.rows[0] });
   } catch (error) {
-    console.error("Error actualizando tecnico:", error);
+    console.error("Error actualizando recepcionista:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
