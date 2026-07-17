@@ -6,6 +6,7 @@ const AuthContext = createContext(null);
 export const roleRoutes = {
   ADMIN: "/admin",
   TECNICO: "/tecnico",
+  RECEPCIONISTA: "/recepcionista",
   CLIENTE: "/cliente",
   MARCA: "/marca"
 };

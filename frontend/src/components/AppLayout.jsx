@@ -27,6 +27,9 @@ const menuByRole = {
     { label: "Garantias", to: "/tecnico/garantias" },
     { label: "Configuracion", to: "/tecnico/configuracion" }
   ],
+  RECEPCIONISTA: [
+    { label: "Dashboard", to: "/recepcionista" }
+  ],
   CLIENTE: [
     { label: "Dashboard", to: "/cliente" },
     { label: "Consulta publica", to: "/consulta-publica" }
