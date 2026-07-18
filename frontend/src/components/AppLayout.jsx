@@ -29,6 +29,7 @@ const menuByRole = {
   ],
   RECEPCIONISTA: [
     { label: "Dashboard", to: "/recepcionista" },
+    { label: "Ordenes", to: "/recepcionista/ordenes" },
     { label: "Clientes", to: "/recepcionista/clientes" }
   ],
   CLIENTE: [

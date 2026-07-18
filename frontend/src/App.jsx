@@ -17,6 +17,7 @@ import TecnicoConsultaPage from "./pages/tecnico/TecnicoConsultaPage.jsx";
 import TecnicoConfiguracion from "./pages/tecnico/TecnicoConfiguracion.jsx";
 import RecepcionistaDashboard from "./pages/RecepcionistaDashboard.jsx";
 import RecepcionistaClientes from "./pages/recepcionista/RecepcionistaClientes.jsx";
+import RecepcionistaOrdenes from "./pages/recepcionista/RecepcionistaOrdenes.jsx";
 import ClienteDashboard from "./pages/ClienteDashboard.jsx";
 import MarcaDashboard from "./pages/MarcaDashboard.jsx";
 import MarcaSucursales from "./pages/marca/MarcaSucursales.jsx";
@@ -49,6 +50,7 @@ function App() {
 
       <Route path="/recepcionista" element={<ProtectedRoute allowedRoles={["RECEPCIONISTA"]}><RecepcionistaDashboard /></ProtectedRoute>} />
       <Route path="/recepcionista/clientes" element={<ProtectedRoute allowedRoles={["RECEPCIONISTA"]}><RecepcionistaClientes /></ProtectedRoute>} />
+      <Route path="/recepcionista/ordenes" element={<ProtectedRoute allowedRoles={["RECEPCIONISTA"]}><RecepcionistaOrdenes /></ProtectedRoute>} />
 
       <Route path="/cliente" element={<ProtectedRoute allowedRoles={["CLIENTE"]}><ClienteDashboard /></ProtectedRoute>} />
 

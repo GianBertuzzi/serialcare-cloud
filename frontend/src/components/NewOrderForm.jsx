@@ -4,7 +4,7 @@ import StatusBadge from "./StatusBadge.jsx";
 import api from "../services/api";
 import { formatCurrency } from "../utils/format.js";
 
-const TIPOS_ATENCION = ["REPARACION", "GARANTIA", "MANTENCION", "PUESTA_EN_MARCHA"];
+const TIPOS_ORDEN = ["REPARACION", "REVISION_GARANTIA", "MANTENCION", "PUESTA_EN_MARCHA"];
 
 const initialForm = {
   id_cliente: "",
@@ -23,19 +23,19 @@ const initialForm = {
   descripcion_producto: "",
   estado_garantia: "PENDIENTE",
   alerta_propiedad: "false",
-  id_tecnico: "",
-  tipo_atencion: "REPARACION",
-  descripcion_problema: ""
+  tipo_orden: "REPARACION",
+  descripcion_problema: "",
+  accesorios_recibidos: "",
+  observaciones_recepcion: ""
 };
 
 function NewOrderForm({ onCancel, onCreated }) {
   const { user } = useAuth();
-  const isAdmin = user?.rol === "ADMIN";
+  const canCreateRelatedRecords = user?.rol === "ADMIN";
   const [form, setForm] = useState(initialForm);
   const [clientes, setClientes] = useState([]);
   const [productos, setProductos] = useState([]);
   const [tiposMaquina, setTiposMaquina] = useState([]);
-  const [tecnicos, setTecnicos] = useState([]);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -45,17 +45,15 @@ function NewOrderForm({ onCancel, onCreated }) {
     setError("");
 
     try {
-      const [clientesResponse, tiposResponse, tecnicosResponse] = await Promise.all([
+      const [clientesResponse, tiposResponse] = await Promise.all([
         api.get("/clientes"),
-        api.get("/tipos-maquina"),
-        isAdmin ? api.get("/tecnicos") : Promise.resolve({ data: { tecnicos: [] } })
+        canCreateRelatedRecords ? api.get("/tipos-maquina") : Promise.resolve({ data: { tipos_maquina: [] } })
       ]);
 
       const nextClientes = clientesResponse.data.clientes || [];
       const nextTipos = tiposResponse.data.tipos_maquina || tiposResponse.data.tipos || [];
       setClientes(nextClientes);
       setTiposMaquina(nextTipos);
-      setTecnicos(tecnicosResponse.data.tecnicos || []);
 
       if (nextClientes.length > 0) {
         setForm((current) => ({ ...current, id_cliente: String(nextClientes[0].id_cliente), id_tipo_maquina: nextTipos[0] ? String(nextTipos[0].id_tipo_maquina) : "" }));
@@ -117,13 +115,14 @@ function NewOrderForm({ onCancel, onCreated }) {
 
   const selectedProducto = productos.find((producto) => String(producto.id_producto) === String(form.id_producto));
   const selectedTipoMaquina = tiposMaquina.find((tipo) => String(tipo.id_tipo_maquina) === String(form.id_tipo_maquina));
-  const garantiaVencida = selectedProducto?.estado_garantia === "VENCIDA" && form.tipo_atencion === "GARANTIA";
+  const garantiaVencida = selectedProducto?.estado_garantia === "VENCIDA" && form.tipo_orden === "REVISION_GARANTIA";
 
   function buildPayload() {
     const payload = {
-      tipo_atencion: form.tipo_atencion,
+      tipo_orden: form.tipo_orden,
       descripcion_problema: form.descripcion_problema.trim(),
-      id_tecnico: form.id_tecnico ? Number(form.id_tecnico) : null
+      accesorios_recibidos: form.accesorios_recibidos.trim(),
+      observaciones_recepcion: form.observaciones_recepcion.trim()
     };
 
     if (form.cliente_mode === "nuevo") {
@@ -161,7 +160,7 @@ function NewOrderForm({ onCancel, onCreated }) {
     if (form.producto_mode === "existente" && !form.id_producto) return "Selecciona una maquina o registra una nueva.";
     if (form.producto_mode === "nuevo" && (!form.numero_serie.trim() || !form.marca.trim() || !form.modelo.trim())) return "Serie, marca y modelo de la maquina son obligatorios.";
     if (form.producto_mode === "nuevo" && !form.id_tipo_maquina) return "Selecciona un tipo de maquina.";
-    if (!form.tipo_atencion) return "Selecciona un tipo de atencion.";
+    if (!form.tipo_orden) return "Selecciona un tipo de orden.";
     if (!form.descripcion_problema.trim()) return "Descripcion del problema es obligatoria.";
     return "";
   }
@@ -205,7 +204,7 @@ function NewOrderForm({ onCancel, onCreated }) {
               <label className="form-label">Modo cliente</label>
               <select className="form-select" name="cliente_mode" value={form.cliente_mode} onChange={handleChange}>
                 <option value="existente">Cliente existente</option>
-                <option value="nuevo">Crear cliente nuevo</option>
+                {canCreateRelatedRecords ? <option value="nuevo">Crear cliente nuevo</option> : null}
               </select>
             </div>
 
@@ -234,7 +233,7 @@ function NewOrderForm({ onCancel, onCreated }) {
               <label className="form-label">Modo maquina</label>
               <select className="form-select" name="producto_mode" value={form.producto_mode} onChange={handleChange} disabled={form.cliente_mode === "nuevo"}>
                 <option value="existente">Maquina existente</option>
-                <option value="nuevo">Registrar maquina nueva</option>
+                {canCreateRelatedRecords ? <option value="nuevo">Registrar maquina nueva</option> : null}
               </select>
             </div>
 
@@ -276,9 +275,10 @@ function NewOrderForm({ onCancel, onCreated }) {
 
           <p className="form-section-heading">3. Atencion</p>
           <div className="row g-3">
-            <div className="col-md-4"><label className="form-label">Tipo de atencion</label><select className="form-select" name="tipo_atencion" value={form.tipo_atencion} onChange={handleChange} required>{TIPOS_ATENCION.map((tipo) => <option key={tipo} value={tipo}>{tipo}</option>)}</select></div>
-            {isAdmin ? <div className="col-md-4"><label className="form-label">Tecnico asignado</label><select className="form-select" name="id_tecnico" value={form.id_tecnico} onChange={handleChange}><option value="">Sin asignar</option>{tecnicos.map((tecnico) => <option key={tecnico.id_usuario} value={tecnico.id_usuario}>{tecnico.nombre}</option>)}</select></div> : null}
+            <div className="col-md-4"><label className="form-label">Tipo de orden</label><select className="form-select" name="tipo_orden" value={form.tipo_orden} onChange={handleChange} required>{TIPOS_ORDEN.map((tipo) => <option key={tipo} value={tipo}>{tipo}</option>)}</select></div>
             <div className="col-12"><label className="form-label">Descripcion del problema</label><textarea className="form-control" name="descripcion_problema" value={form.descripcion_problema} onChange={handleChange} required /></div>
+            <div className="col-md-6"><label className="form-label">Accesorios recibidos</label><textarea className="form-control" name="accesorios_recibidos" value={form.accesorios_recibidos} onChange={handleChange} /></div>
+            <div className="col-md-6"><label className="form-label">Observaciones de recepcion</label><textarea className="form-control" name="observaciones_recepcion" value={form.observaciones_recepcion} onChange={handleChange} /></div>
           </div>
 
           {error ? <p className="alert alert-danger mt-3 mb-0">{error}</p> : null}
