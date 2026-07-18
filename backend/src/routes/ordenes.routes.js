@@ -267,7 +267,7 @@ async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false, allowCl
   return { orden, usuarioSucursal };
 }
 
-async function refreshCotizacion(idOrden, client = db, estado = null, observacion = null) {
+async function refreshCotizacion(idOrden, client = db, estado = null, observacion = null, valorIngresoOverride = null) {
   const totalResult = await client.query(
     `SELECT COALESCE(SUM(subtotal), 0) AS total_repuestos
     FROM repuestos_usados
@@ -288,7 +288,9 @@ async function refreshCotizacion(idOrden, client = db, estado = null, observacio
   }
 
   const totalRepuestos = Number(totalResult.rows[0]?.total_repuestos || 0);
-  const valorIngreso = Number(ordenResult.rows[0]?.valor_ingreso || 0);
+  const valorIngreso = valorIngresoOverride === null
+    ? Number(ordenResult.rows[0]?.valor_ingreso || 0)
+    : Number(valorIngresoOverride);
   const manoObra = Number(ordenResult.rows[0]?.mano_obra || 0);
   const totalGeneral = totalRepuestos + valorIngreso + manoObra;
 
@@ -342,6 +344,7 @@ async function getRepuestos(idOrden) {
       ru.nombre_repuesto,
       r.codigo AS codigo_repuesto,
       r.marca AS marca_repuesto,
+      r.stock AS stock_disponible,
       ru.cantidad,
       ru.precio_unitario,
       ru.subtotal,
@@ -382,6 +385,19 @@ async function getCotizacion(idOrden) {
   return result.rows[0] || null;
 }
 
+async function getBorradorTecnicoFinalizado(idOrden) {
+  const result = await db.query(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM historial_estados_orden
+      WHERE id_orden = $1
+        AND accion = 'FINALIZAR_BORRADOR_TECNICO'
+    ) AS finalizado`,
+    [idOrden]
+  );
+
+  return result.rows[0]?.finalizado === true;
+}
 async function getEvidencias(idOrden) {
   const result = await db.query(
     `SELECT
@@ -416,11 +432,12 @@ async function getGarantiaPorOrden(idOrden) {
 }
 
 async function buildOrdenDetalle(orden) {
-  const [repuestos, cotizacion, garantia, evidencias] = await Promise.all([
+  const [repuestos, cotizacion, garantia, evidencias, borradorTecnicoFinalizado] = await Promise.all([
     getRepuestos(orden.id_orden),
     getCotizacion(orden.id_orden),
     getGarantiaPorOrden(orden.id_orden),
-    getEvidencias(orden.id_orden)
+    getEvidencias(orden.id_orden),
+    getBorradorTecnicoFinalizado(orden.id_orden)
   ]);
 
   return {
@@ -468,7 +485,8 @@ async function buildOrdenDetalle(orden) {
     repuestos,
     cotizacion,
     garantia,
-    evidencias
+    evidencias,
+    borrador_tecnico_finalizado: borradorTecnicoFinalizado
   };
 }
 router.get("/", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
@@ -891,6 +909,12 @@ router.get("/:id/detalle", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", "CL
     }
 
     const detalle = await buildOrdenDetalle(access.orden);
+
+    if (req.usuario.rol === "RECEPCIONISTA" && !detalle.borrador_tecnico_finalizado) {
+      detalle.repuestos = [];
+      detalle.cotizacion = null;
+    }
+
     return res.json({ detalle });
   } catch (error) {
     console.error("Error obteniendo detalle de orden:", error);
@@ -993,6 +1017,20 @@ router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res
       return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
     }
 
+    const borradorFinalizadoResult = await client.query(
+      `SELECT EXISTS (
+        SELECT 1
+        FROM historial_estados_orden
+        WHERE id_orden = $1
+          AND accion = 'FINALIZAR_BORRADOR_TECNICO'
+      ) AS finalizado`,
+      [idOrden]
+    );
+
+    if (borradorFinalizadoResult.rows[0]?.finalizado) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El borrador tecnico ya fue finalizado" });
+    }
     await client.query(
       `UPDATE ordenes_servicio
       SET diagnostico = $1,
@@ -1209,12 +1247,87 @@ router.put("/:id/decision-garantia", verificarRol("ADMIN", "TECNICO"), async (re
     client.release();
   }
 });
-router.get("/:id/repuestos", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+async function getOrdenTrabajoEditable(client, idOrden, usuario) {
+  const usuarioSucursal = await getUsuarioSucursal(usuario.id_usuario, client);
+
+  if (!usuarioSucursal?.id_sucursal) {
+    return { status: 400, error: "Usuario no tiene sucursal asignada" };
+  }
+
+  const ordenResult = await client.query(
+    `SELECT
+      id_orden,
+      id_sucursal,
+      id_responsable,
+      estado,
+      tipo_orden,
+      tipo_atencion,
+      diagnostico,
+      mano_obra,
+      valor_ingreso,
+      garantia_aprobada_por_admin,
+      version
+    FROM ordenes_servicio
+    WHERE id_orden = $1
+      AND id_sucursal = $2
+    FOR UPDATE`,
+    [idOrden, usuarioSucursal.id_sucursal]
+  );
+
+  if (ordenResult.rows.length === 0) {
+    return { status: 404, error: "Orden no encontrada" };
+  }
+
+  const orden = ordenResult.rows[0];
+
+  if (!["EN_REVISION", "EN_REPARACION"].includes(orden.estado)) {
+    return { status: 409, error: "La orden debe estar EN_REVISION o EN_REPARACION" };
+  }
+
+  if (usuario.rol === "TECNICO" && Number(orden.id_responsable) !== Number(usuario.id_usuario)) {
+    return { status: 404, error: "Orden no encontrada para el tecnico" };
+  }
+
+  const cotizacionResult = await client.query(
+    `SELECT id_cotizacion, estado
+    FROM cotizaciones
+    WHERE id_orden = $1
+    FOR UPDATE`,
+    [idOrden]
+  );
+  const cotizacion = cotizacionResult.rows[0] || null;
+
+  if (cotizacion && cotizacion.estado !== "BORRADOR") {
+    return { status: 409, error: "La cotizacion ya no permite modificar el trabajo tecnico" };
+  }
+
+  const finalizadoResult = await client.query(
+    `SELECT EXISTS (
+      SELECT 1
+      FROM historial_estados_orden
+      WHERE id_orden = $1
+        AND accion = 'FINALIZAR_BORRADOR_TECNICO'
+    ) AS finalizado`,
+    [idOrden]
+  );
+
+  if (finalizadoResult.rows[0]?.finalizado) {
+    return { status: 409, error: "El borrador tecnico ya fue finalizado" };
+  }
+
+  return { orden, cotizacion, usuarioSucursal };
+}
+
+router.get("/:id/repuestos", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario, true);
+    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
 
     if (access.error) {
       return res.status(access.status).json({ error: access.error });
+    }
+
+    if (req.usuario.rol === "RECEPCIONISTA" && !(await getBorradorTecnicoFinalizado(access.orden.id_orden))) {
+      return res.status(409).json({ error: "El borrador tecnico aun no esta finalizado" });
     }
 
     const repuestos = await getRepuestos(access.orden.id_orden);
@@ -1226,139 +1339,311 @@ router.get("/:id/repuestos", verificarRol("ADMIN", "TECNICO"), async (req, res) 
 });
 
 router.post("/:id/repuestos", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const idRepuesto = req.body?.id_repuesto ? Number(req.body.id_repuesto) : null;
-  const cantidadValue = parsePositiveInteger(req.body?.cantidad, 1);
-  const precioBody = parseMoney(req.body?.precio_unitario, 0);
-  const cubiertoGarantiaValue = req.body?.cubierto_garantia === true || req.body?.cubierto_garantia === "true";
-  const observacionValue = clean(req.body?.observacion);
+  const idOrden = Number(req.params.id);
+  const idRepuesto = Number(req.body?.id_repuesto);
+  const cantidad = parsePositiveInteger(req.body?.cantidad, null);
+  const observacion = clean(req.body?.observacion) || null;
+  const camposPermitidos = new Set(["id_repuesto", "cantidad", "observacion"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
 
-  if (cantidadValue === null) {
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(idRepuesto) || idRepuesto <= 0) {
+    return res.status(400).json({ error: "id de orden e id_repuesto deben ser validos" });
+  }
+
+  if (cantidad === null) {
     return res.status(400).json({ error: "cantidad debe ser un numero entero mayor o igual a 1" });
   }
 
-  if (precioBody === null) {
-    return res.status(400).json({ error: "precio_unitario debe ser un numero mayor o igual a 0" });
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite enviar id_repuesto, cantidad y observacion" });
   }
 
+  const client = await db.pool.connect();
+
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+    await client.query("BEGIN");
+    const access = await getOrdenTrabajoEditable(client, idOrden, req.usuario);
 
     if (access.error) {
+      await client.query("ROLLBACK");
       return res.status(access.status).json({ error: access.error });
     }
 
-    let nombreRepuesto = clean(req.body?.nombre_repuesto);
-    let precioUnitario = precioBody;
-
-    if (idRepuesto) {
-      const repuestoResult = await db.query(
-        `SELECT id_repuesto, nombre, precio
-        FROM repuestos
-        WHERE id_repuesto = $1
-          AND id_sucursal = $2
-          AND estado = 'ACTIVO'
-        LIMIT 1`,
-        [idRepuesto, access.orden.id_sucursal]
-      );
-
-      if (repuestoResult.rows.length === 0) {
-        return res.status(404).json({ error: "Repuesto no encontrado para la sucursal" });
-      }
-
-      nombreRepuesto = repuestoResult.rows[0].nombre;
-      precioUnitario = req.usuario.rol === "ADMIN" && req.body?.precio_unitario !== undefined
-        ? precioBody
-        : Number(repuestoResult.rows[0].precio || 0);
-    }
-
-    if (!nombreRepuesto) {
-      return res.status(400).json({ error: "nombre_repuesto o id_repuesto es obligatorio" });
-    }
-
-    const subtotal = cantidadValue * precioUnitario;
-    const result = await db.query(
-      `INSERT INTO repuestos_usados (id_orden, id_repuesto, nombre_repuesto, cantidad, precio_unitario, subtotal, cubierto_garantia, observacion)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING id_detalle, id_detalle AS id_repuesto_usado, id_orden, id_repuesto, nombre_repuesto, cantidad, precio_unitario, subtotal, cubierto_garantia, observacion, fecha_registro`,
-      [access.orden.id_orden, idRepuesto, nombreRepuesto, cantidadValue, precioUnitario, subtotal, cubiertoGarantiaValue, observacionValue]
+    const repuestoResult = await client.query(
+      `SELECT id_repuesto, nombre, precio, stock
+      FROM repuestos
+      WHERE id_repuesto = $1
+        AND id_sucursal = $2
+        AND estado = 'ACTIVO'
+      FOR UPDATE`,
+      [idRepuesto, access.orden.id_sucursal]
     );
 
-    await refreshCotizacion(access.orden.id_orden);
-    return res.status(201).json({ repuesto: result.rows[0] });
+    if (repuestoResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Repuesto activo no encontrado para la sucursal" });
+    }
+
+    const duplicadoResult = await client.query(
+      `SELECT id_detalle
+      FROM repuestos_usados
+      WHERE id_orden = $1
+        AND id_repuesto = $2
+      LIMIT 1`,
+      [idOrden, idRepuesto]
+    );
+
+    if (duplicadoResult.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El repuesto ya esta agregado; modifica su cantidad" });
+    }
+
+    const repuesto = repuestoResult.rows[0];
+    const stockDisponible = Number(repuesto.stock || 0);
+
+    if (cantidad > stockDisponible) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Stock insuficiente para la cantidad solicitada", stock_disponible: stockDisponible });
+    }
+
+    const precioUnitario = Number(repuesto.precio || 0);
+    const subtotal = cantidad * precioUnitario;
+    const tipoOrden = normalizeTipoAtencion(access.orden.tipo_orden || access.orden.tipo_atencion);
+    const cubiertoGarantia = tipoOrden === "REVISION_GARANTIA" && access.orden.garantia_aprobada_por_admin === true;
+    const insertResult = await client.query(
+      `INSERT INTO repuestos_usados (
+        id_orden,
+        id_repuesto,
+        nombre_repuesto,
+        cantidad,
+        precio_unitario,
+        subtotal,
+        cubierto_garantia,
+        observacion
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id_detalle, id_detalle AS id_repuesto_usado, id_orden, id_repuesto, nombre_repuesto, cantidad, precio_unitario, subtotal, cubierto_garantia, observacion, fecha_registro`,
+      [idOrden, idRepuesto, repuesto.nombre, cantidad, precioUnitario, subtotal, cubiertoGarantia, observacion]
+    );
+
+    await client.query("COMMIT");
+    return res.status(201).json({ repuesto: { ...insertResult.rows[0], stock_disponible: stockDisponible } });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Error agregando repuesto a orden:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 
 router.put("/:id/repuestos/:idDetalle", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const cantidadValue = parsePositiveInteger(req.body?.cantidad, 1);
-  const observacionValue = clean(req.body?.observacion);
-  const cubiertoGarantiaValue = req.body?.cubierto_garantia === true || req.body?.cubierto_garantia === "true";
-  const precioBody = parseMoney(req.body?.precio_unitario, 0);
+  const idOrden = Number(req.params.id);
+  const idDetalle = Number(req.params.idDetalle);
+  const cantidad = parsePositiveInteger(req.body?.cantidad, null);
+  const observacion = req.body?.observacion === undefined ? null : clean(req.body.observacion);
+  const camposPermitidos = new Set(["cantidad", "observacion"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
 
-  if (cantidadValue === null || precioBody === null) {
-    return res.status(400).json({ error: "cantidad y precio_unitario deben ser validos" });
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(idDetalle) || idDetalle <= 0) {
+    return res.status(400).json({ error: "Los identificadores deben ser validos" });
   }
 
+  if (cantidad === null) {
+    return res.status(400).json({ error: "cantidad debe ser un numero entero mayor o igual a 1" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite modificar cantidad y observacion" });
+  }
+
+  const client = await db.pool.connect();
+
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+    await client.query("BEGIN");
+    const access = await getOrdenTrabajoEditable(client, idOrden, req.usuario);
 
     if (access.error) {
+      await client.query("ROLLBACK");
       return res.status(access.status).json({ error: access.error });
     }
 
-    const existing = await db.query(
-      `SELECT ru.id_detalle, ru.id_repuesto, COALESCE(r.precio, ru.precio_unitario) AS precio_catalogo
+    const detalleResult = await client.query(
+      `SELECT ru.id_detalle, ru.id_repuesto, ru.precio_unitario, ru.observacion, r.nombre, r.stock
       FROM repuestos_usados ru
-      LEFT JOIN repuestos r ON r.id_repuesto = ru.id_repuesto
+      INNER JOIN repuestos r ON r.id_repuesto = ru.id_repuesto
       WHERE ru.id_detalle = $1
         AND ru.id_orden = $2
-      LIMIT 1`,
-      [req.params.idDetalle, access.orden.id_orden]
+        AND r.id_sucursal = $3
+        AND r.estado = 'ACTIVO'
+      FOR UPDATE OF ru, r`,
+      [idDetalle, idOrden, access.orden.id_sucursal]
     );
 
-    if (existing.rows.length === 0) {
-      return res.status(404).json({ error: "Detalle de repuesto no encontrado" });
+    if (detalleResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Detalle de repuesto de catalogo no encontrado" });
     }
 
-    const precioUnitario = req.usuario.rol === "ADMIN" ? precioBody : Number(existing.rows[0].precio_catalogo || 0);
-    const subtotal = cantidadValue * precioUnitario;
+    const detalle = detalleResult.rows[0];
+    const otrasCantidadesResult = await client.query(
+      `SELECT COALESCE(SUM(cantidad), 0) AS cantidad
+      FROM repuestos_usados
+      WHERE id_orden = $1
+        AND id_repuesto = $2
+        AND id_detalle <> $3`,
+      [idOrden, detalle.id_repuesto, idDetalle]
+    );
+    const cantidadTotal = cantidad + Number(otrasCantidadesResult.rows[0]?.cantidad || 0);
+    const stockDisponible = Number(detalle.stock || 0);
 
-    const result = await db.query(
+    if (cantidadTotal > stockDisponible) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Stock insuficiente para la cantidad solicitada", stock_disponible: stockDisponible });
+    }
+
+    const precioUnitario = Number(detalle.precio_unitario || 0);
+    const subtotal = cantidad * precioUnitario;
+    const updateResult = await client.query(
       `UPDATE repuestos_usados
       SET cantidad = $1,
-          precio_unitario = $2,
-          subtotal = $3,
-          cubierto_garantia = $4,
-          observacion = $5
-      WHERE id_detalle = $6
-        AND id_orden = $7
+          subtotal = $2,
+          observacion = COALESCE($3, observacion)
+      WHERE id_detalle = $4
+        AND id_orden = $5
       RETURNING id_detalle, id_detalle AS id_repuesto_usado, id_orden, id_repuesto, nombre_repuesto, cantidad, precio_unitario, subtotal, cubierto_garantia, observacion, fecha_registro`,
-      [cantidadValue, precioUnitario, subtotal, cubiertoGarantiaValue, observacionValue, req.params.idDetalle, access.orden.id_orden]
+      [cantidad, subtotal, observacion, idDetalle, idOrden]
     );
 
-    await refreshCotizacion(access.orden.id_orden);
-    return res.json({ repuesto: result.rows[0] });
+    await client.query("COMMIT");
+    return res.json({ repuesto: { ...updateResult.rows[0], stock_disponible: stockDisponible } });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Error actualizando repuesto usado:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 
-router.get("/:id/cotizacion", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
+router.delete("/:id/repuestos/:idDetalle", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const idDetalle = Number(req.params.idDetalle);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(idDetalle) || idDetalle <= 0) {
+    return res.status(400).json({ error: "Los identificadores deben ser validos" });
+  }
+
+  const client = await db.pool.connect();
+
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);
+    await client.query("BEGIN");
+    const access = await getOrdenTrabajoEditable(client, idOrden, req.usuario);
+
+    if (access.error) {
+      await client.query("ROLLBACK");
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    const deleteResult = await client.query(
+      `DELETE FROM repuestos_usados
+      WHERE id_detalle = $1
+        AND id_orden = $2
+        AND id_repuesto IS NOT NULL
+      RETURNING id_detalle`,
+      [idDetalle, idOrden]
+    );
+
+    if (deleteResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Detalle de repuesto de catalogo no encontrado" });
+    }
+
+    await client.query("COMMIT");
+    return res.status(204).send();
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error retirando repuesto usado:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
+router.put("/:id/mano-obra", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const manoObra = parseMoney(req.body?.mano_obra, null);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => campo !== "mano_obra");
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (manoObra === null) {
+    return res.status(400).json({ error: "mano_obra debe ser un numero mayor o igual a 0" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite modificar mano_obra" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const access = await getOrdenTrabajoEditable(client, idOrden, req.usuario);
+
+    if (access.error) {
+      await client.query("ROLLBACK");
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    const updateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET mano_obra = $1,
+          version = version + 1
+      WHERE id_orden = $2
+      RETURNING id_orden, mano_obra, version`,
+      [manoObra, idOrden]
+    );
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion,
+        observacion
+      )
+      VALUES ($1, $2, $2, $3, 'ACTUALIZAR_MANO_OBRA', $4)`,
+      [idOrden, access.orden.estado, req.usuario.id_usuario, `Mano de obra estimada: ${manoObra}`]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ orden: updateResult.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error actualizando mano de obra:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/:id/cotizacion", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", "CLIENTE"), async (req, res) => {
+  try {
+    const access = await getOrdenParaUsuario(req.params.id, req.usuario, false, true);
 
     if (access.error) {
       return res.status(access.status).json({ error: access.error });
     }
 
-    let cotizacion = await getCotizacion(access.orden.id_orden);
-    if (!cotizacion) {
-      cotizacion = await refreshCotizacion(access.orden.id_orden);
+    if (req.usuario.rol === "RECEPCIONISTA" && !(await getBorradorTecnicoFinalizado(access.orden.id_orden))) {
+      return res.status(409).json({ error: "El borrador tecnico aun no esta finalizado" });
     }
 
+    const cotizacion = await getCotizacion(access.orden.id_orden);
     return res.json({ cotizacion });
   } catch (error) {
     console.error("Error obteniendo cotizacion:", error);
@@ -1366,42 +1651,134 @@ router.get("/:id/cotizacion", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async
   }
 });
 
-router.post("/:id/cotizacion", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const manoObra = parseMoney(req.body?.mano_obra, 0);
-  const observacion = clean(req.body?.observacion);
-  const estado = clean(req.body?.estado).toUpperCase() || "BORRADOR";
+router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
 
-  if (manoObra === null) {
-    return res.status(400).json({ error: "mano_obra debe ser un numero mayor o igual a 0" });
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
   }
 
-  if (!["BORRADOR", "ENVIADA", "APROBADA", "RECHAZADA"].includes(estado)) {
-    return res.status(400).json({ error: "estado de cotizacion no es valido" });
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
   }
+
+  const client = await db.pool.connect();
 
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+    await client.query("BEGIN");
+    const access = await getOrdenTrabajoEditable(client, idOrden, req.usuario);
 
     if (access.error) {
+      await client.query("ROLLBACK");
       return res.status(access.status).json({ error: access.error });
     }
 
-    await db.query(
-      `UPDATE ordenes_servicio
-      SET mano_obra = $1
-      WHERE id_orden = $2
-        AND id_sucursal = $3`,
-      [manoObra, access.orden.id_orden, access.orden.id_sucursal]
+    if (!clean(access.orden.diagnostico)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Debe registrar el diagnostico antes de finalizar el borrador" });
+    }
+
+    const tipoOrden = normalizeTipoAtencion(access.orden.tipo_orden || access.orden.tipo_atencion);
+    const garantiaAprobada = tipoOrden === "REVISION_GARANTIA" && access.orden.garantia_aprobada_por_admin === true;
+    const garantiaRechazada = tipoOrden === "REVISION_GARANTIA" && access.orden.garantia_aprobada_por_admin === false;
+
+    if (tipoOrden === "REVISION_GARANTIA" && !garantiaAprobada && !garantiaRechazada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Debe registrar la decision final de garantia antes de finalizar el borrador" });
+    }
+
+    const stockInsuficienteResult = await client.query(
+      `SELECT r.id_repuesto, r.nombre, r.stock, SUM(ru.cantidad)::INTEGER AS cantidad
+      FROM repuestos_usados ru
+      INNER JOIN repuestos r ON r.id_repuesto = ru.id_repuesto
+      WHERE ru.id_orden = $1
+      GROUP BY r.id_repuesto, r.nombre, r.stock
+      HAVING SUM(ru.cantidad) > r.stock
+      LIMIT 1`,
+      [idOrden]
     );
 
-    const cotizacion = await refreshCotizacion(access.orden.id_orden, db, estado, observacion);
-    return res.json({ cotizacion });
+    if (stockInsuficienteResult.rows.length > 0) {
+      await client.query("ROLLBACK");
+      const faltante = stockInsuficienteResult.rows[0];
+      return res.status(409).json({
+        error: `Stock insuficiente para ${faltante.nombre}`,
+        id_repuesto: faltante.id_repuesto,
+        stock_disponible: Number(faltante.stock),
+        cantidad: Number(faltante.cantidad)
+      });
+    }
+
+    const totalResult = await client.query(
+      `SELECT COALESCE(SUM(subtotal), 0) AS total_repuestos
+      FROM repuestos_usados
+      WHERE id_orden = $1`,
+      [idOrden]
+    );
+    const totalRepuestos = Number(totalResult.rows[0]?.total_repuestos || 0);
+    const manoObra = Number(access.orden.mano_obra || 0);
+    const valorIngresoOrden = Number(access.orden.valor_ingreso || 0);
+    const requiereCotizacion = tipoOrden === "REPARACION" || garantiaRechazada;
+    const valorIngresoAplicado = tipoOrden === "REPARACION" ? valorIngresoOrden : 0;
+    const totalTrabajo = totalRepuestos + manoObra + (requiereCotizacion ? valorIngresoAplicado : valorIngresoOrden);
+    const totalCliente = garantiaAprobada ? 0 : (requiereCotizacion ? totalRepuestos + manoObra + valorIngresoAplicado : null);
+    let cotizacion = null;
+
+    if (!requiereCotizacion && access.cotizacion) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden tiene una cotizacion incompatible con su tipo o garantia" });
+    }
+
+    if (requiereCotizacion) {
+      cotizacion = await refreshCotizacion(idOrden, client, "BORRADOR", null, valorIngresoAplicado);
+    }
+
+    await client.query(
+      `UPDATE ordenes_servicio
+      SET version = version + 1
+      WHERE id_orden = $1`,
+      [idOrden]
+    );
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion,
+        observacion
+      )
+      VALUES ($1, $2, $2, $3, 'FINALIZAR_BORRADOR_TECNICO', $4)`,
+      [
+        idOrden,
+        access.orden.estado,
+        req.usuario.id_usuario,
+        `Tipo ${tipoOrden}; total repuestos ${totalRepuestos}; mano de obra ${manoObra}; total cliente ${totalCliente ?? 0}`
+      ]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      cotizacion,
+      resumen: {
+        tipo_orden: tipoOrden,
+        requiere_cotizacion: requiereCotizacion,
+        total_repuestos: totalRepuestos,
+        mano_obra: manoObra,
+        valor_ingreso: requiereCotizacion ? valorIngresoAplicado : valorIngresoOrden,
+        total_preliminar: totalTrabajo,
+        total_cliente: totalCliente
+      }
+    });
   } catch (error) {
-    console.error("Error guardando cotizacion:", error);
+    await client.query("ROLLBACK");
+    console.error("Error finalizando borrador tecnico:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
-
 router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);

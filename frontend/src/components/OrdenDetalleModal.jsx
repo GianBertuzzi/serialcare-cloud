@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import StatusBadge from "./StatusBadge.jsx";
 import api, { createEvidenciaManual, uploadEvidenciaOrden } from "../services/api";
 import { formatCurrency, formatDate } from "../utils/format.js";
 
-const initialRepuestoForm = { id_repuesto: "", nombre_repuesto: "", cantidad: "1", precio_unitario: "0", cubierto_garantia: "false", observacion: "" };
+const initialRepuestoForm = { id_repuesto: "", cantidad: "1", observacion: "" };
 const initialEvidenciaForm = { tipo: "IMAGEN", nombre_archivo: "", url_archivo: "", descripcion: "" };
 const initialEvidenciaUploadForm = { tipo: "IMAGEN", descripcion: "", file: null };
 const MAX_EVIDENCE_FILE_SIZE = 10 * 1024 * 1024;
@@ -47,10 +47,10 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const [saving, setSaving] = useState("");
   const [repuestoForm, setRepuestoForm] = useState(initialRepuestoForm);
   const [informeForm, setInformeForm] = useState({ diagnostico: "", informe_tecnico: "", mano_obra: "0" });
-  const [cotizacionForm, setCotizacionForm] = useState({ mano_obra: "0", estado: "BORRADOR", observacion: "" });
   const [evidenciaForm, setEvidenciaForm] = useState(initialEvidenciaForm);
   const [evidenciaUploadForm, setEvidenciaUploadForm] = useState(initialEvidenciaUploadForm);
   const [decisionForm, setDecisionForm] = useState(initialDecisionForm);
+  const [cantidadesRepuestos, setCantidadesRepuestos] = useState({});
 
   const idOrden = orden?.id_orden;
 
@@ -67,14 +67,14 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
         informe_tecnico: nextDetalle?.orden?.informe_tecnico || "",
         mano_obra: String(nextDetalle?.orden?.mano_obra ?? 0)
       });
-      setCotizacionForm({
-        mano_obra: String(nextDetalle?.cotizacion?.mano_obra ?? nextDetalle?.orden?.mano_obra ?? 0),
-        estado: nextDetalle?.cotizacion?.estado || "BORRADOR",
-        observacion: nextDetalle?.cotizacion?.observacion || ""
-      });
+
       setDecisionForm({
         observacion: nextDetalle?.orden?.observacion_admin || nextDetalle?.garantia?.observacion_admin || ""
       });
+      setCantidadesRepuestos(Object.fromEntries((nextDetalle?.repuestos || []).map((repuesto) => [
+        repuesto.id_repuesto_usado,
+        String(repuesto.cantidad)
+      ])));
     } catch (requestError) {
       setError(requestError.response?.data?.error || "No se pudo cargar el detalle de la orden.");
     } finally {
@@ -83,7 +83,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   }
 
   async function loadCatalogoRepuestos() {
-    if (isReadOnly || workflowMode) return;
+    if (isReadOnly) return;
     try {
       const response = await api.get("/repuestos");
       setCatalogoRepuestos(response.data.repuestos || []);
@@ -117,6 +117,24 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     && detalle?.orden?.estado === "EN_REVISION"
     && ownsOrder;
   const canDecideGarantia = canEditDiagnostico && isGarantiaOrder && hasDiagnostico && !hasFinalDecision;
+  const garantiaAprobada = isGarantiaOrder && detalle?.orden?.garantia_aprobada_por_admin === true;
+  const garantiaRechazada = isGarantiaOrder && detalle?.orden?.garantia_aprobada_por_admin === false;
+  const borradorFinalizado = detalle?.borrador_tecnico_finalizado === true;
+  const canEditTrabajo = workflowMode
+    && !isReadOnly
+    && (isAdmin || isTecnico)
+    && ["EN_REVISION", "EN_REPARACION"].includes(detalle?.orden?.estado)
+    && ownsOrder
+    && !borradorFinalizado
+    && (!detalle?.cotizacion || detalle.cotizacion.estado === "BORRADOR");
+  const requiereCotizacion = tipoOrden === "REPARACION" || garantiaRechazada;
+  const valorIngreso = Number(detalle?.orden?.valor_ingreso || detalle?.orden?.valor_revision || 0);
+  const valorIngresoAplicado = garantiaRechazada ? 0 : valorIngreso;
+  const manoObra = Number(detalle?.orden?.mano_obra || 0);
+  const totalPreliminar = totalRepuestos + manoObra + valorIngresoAplicado;
+  const totalCliente = garantiaAprobada ? 0 : (requiereCotizacion ? totalPreliminar : null);
+  const canFinalizarBorrador = canEditTrabajo && hasDiagnostico && (!isGarantiaOrder || hasFinalDecision);
+  const repuestoSeleccionado = catalogoRepuestos.find((repuesto) => String(repuesto.id_repuesto) === String(repuestoForm.id_repuesto));
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -126,11 +144,6 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
 
   function handleRepuestoChange(event) {
     const { name, value } = event.target;
-    if (name === "id_repuesto") {
-      const selected = catalogoRepuestos.find((repuesto) => String(repuesto.id_repuesto) === String(value));
-      setRepuestoForm((current) => ({ ...current, id_repuesto: value, nombre_repuesto: selected?.nombre || "", precio_unitario: String(selected?.precio ?? current.precio_unitario) }));
-      return;
-    }
     setRepuestoForm((current) => ({ ...current, [name]: value }));
   }
 
@@ -141,11 +154,8 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     setSuccess("");
     try {
       await api.post(`/ordenes/${idOrden}/repuestos`, {
-        id_repuesto: repuestoForm.id_repuesto ? Number(repuestoForm.id_repuesto) : null,
-        nombre_repuesto: repuestoForm.nombre_repuesto.trim(),
-        cantidad: Number(repuestoForm.cantidad || 1),
-        precio_unitario: Number(repuestoForm.precio_unitario || 0),
-        cubierto_garantia: repuestoForm.cubierto_garantia === "true",
+        id_repuesto: Number(repuestoForm.id_repuesto),
+        cantidad: Number(repuestoForm.cantidad),
         observacion: repuestoForm.observacion.trim()
       });
       setRepuestoForm(initialRepuestoForm);
@@ -157,6 +167,35 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     }
   }
 
+  async function handleUpdateRepuesto(repuesto) {
+    setSaving(`repuesto-${repuesto.id_repuesto_usado}`);
+    setError("");
+    setSuccess("");
+    try {
+      await api.put(`/ordenes/${idOrden}/repuestos/${repuesto.id_repuesto_usado}`, {
+        cantidad: Number(cantidadesRepuestos[repuesto.id_repuesto_usado])
+      });
+      await afterMutation("Cantidad actualizada correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo actualizar el repuesto.");
+    } finally {
+      setSaving("");
+    }
+  }
+
+  async function handleRemoveRepuesto(repuesto) {
+    setSaving(`repuesto-${repuesto.id_repuesto_usado}`);
+    setError("");
+    setSuccess("");
+    try {
+      await api.delete(`/ordenes/${idOrden}/repuestos/${repuesto.id_repuesto_usado}`);
+      await afterMutation("Repuesto retirado del borrador.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo retirar el repuesto.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleSaveInforme(event) {
     event.preventDefault();
     setSaving("informe");
@@ -176,25 +215,36 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     }
   }
 
-  async function handleSaveCotizacion(event) {
+  async function handleSaveManoObra(event) {
     event.preventDefault();
-    setSaving("cotizacion");
+    setSaving("mano-obra");
     setError("");
     setSuccess("");
     try {
-      await api.post(`/ordenes/${idOrden}/cotizacion`, {
-        mano_obra: Number(cotizacionForm.mano_obra || 0),
-        estado: cotizacionForm.estado,
-        observacion: cotizacionForm.observacion.trim()
+      await api.put(`/ordenes/${idOrden}/mano-obra`, {
+        mano_obra: Number(informeForm.mano_obra || 0)
       });
-      await afterMutation("Cotizacion guardada correctamente.");
+      await afterMutation("Mano de obra actualizada correctamente.");
     } catch (requestError) {
-      setError(requestError.response?.data?.error || "No se pudo guardar la cotizacion.");
+      setError(requestError.response?.data?.error || "No se pudo actualizar la mano de obra.");
     } finally {
       setSaving("");
     }
   }
 
+  async function handleFinalizarBorrador() {
+    setSaving("finalizar-borrador");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/finalizar-borrador`);
+      await afterMutation("Borrador tecnico finalizado correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo finalizar el borrador tecnico.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleAddEvidencia(event) {
     event.preventDefault();
     setSaving("evidencia");
@@ -273,21 +323,24 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const tabs = isRecepcionista
     ? [
         ["resumen", "Resumen"],
-        ["producto", "Cliente / Maquina"]
+        ["producto", "Cliente / Maquina"],
+        ...(borradorFinalizado ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
       ]
     : workflowMode
       ? [
           ["resumen", "Resumen"],
           ["producto", "Cliente / Maquina"],
           ["diagnostico", "Diagnostico"],
-          ...(isGarantiaOrder ? [["garantia", "Garantia"]] : [])
+          ...(isGarantiaOrder ? [["garantia", "Garantia"]] : []),
+          ["repuestos", "Repuestos"],
+          ["borrador", "Borrador tecnico"]
         ]
       : [
           ["resumen", "Resumen"],
           ["producto", "Cliente / Producto"],
           ["diagnostico", "Diagnostico"],
           ["repuestos", "Repuestos usados"],
-          ["cotizacion", "Cotizacion"],
+          ["borrador", "Borrador tecnico"],
           ["garantia", "Garantia"],
           ["evidencias", "Evidencias"]
         ];
@@ -350,25 +403,28 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   </div>}
                   {workflowMode && !canEditDiagnostico && !hasDiagnostico ? <p className="alert alert-info mt-3 mb-0">El diagnostico solo puede registrarse mientras la orden propia esta en revision.</p> : null}
                 </div> : null}
-                {!isRecepcionista && activeTab === "repuestos" ? <div className="detail-card">
-                  <div className="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 className="h6 mb-0">Repuestos usados</h3><strong>Total repuestos: {formatCurrency(totalRepuestos)}</strong></div>
-                  {detalle.repuestos.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Repuesto</th><th>Cantidad</th><th>Precio unitario</th><th>Total</th><th>Cubre garantia</th><th>Observacion</th></tr></thead><tbody>{detalle.repuestos.map((repuesto) => <tr key={repuesto.id_repuesto_usado}><td>{repuesto.nombre_repuesto}</td><td>{repuesto.cantidad}</td><td>{formatCurrency(repuesto.precio_unitario)}</td><td>{formatCurrency(repuesto.subtotal)}</td><td>{repuesto.cubierto_garantia ? "Si" : "No"}</td><td>{repuesto.observacion || "Sin observacion"}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay repuestos registrados.</p>}
-                  {!isReadOnly ? <form className="row g-3 mt-2" onSubmit={handleAddRepuesto}>
-                    <div className="col-md-4"><label className="form-label">Repuesto catalogo</label><select className="form-select" name="id_repuesto" value={repuestoForm.id_repuesto} onChange={handleRepuestoChange}><option value="">Manual / sin catalogo</option>{catalogoRepuestos.map((repuesto) => <option key={repuesto.id_repuesto} value={repuesto.id_repuesto}>{repuesto.nombre} - {formatCurrency(repuesto.precio)}</option>)}</select></div>
-                    <div className="col-md-3"><label className="form-label">Nombre repuesto</label><input className="form-control" name="nombre_repuesto" value={repuestoForm.nombre_repuesto} onChange={handleRepuestoChange} required /></div>
-                    <div className="col-md-2"><label className="form-label">Cantidad</label><input className="form-control" name="cantidad" type="number" min="1" value={repuestoForm.cantidad} onChange={handleRepuestoChange} required /></div>
-                    <div className="col-md-3"><label className="form-label">Precio unitario</label><input className="form-control" name="precio_unitario" type="number" min="0" value={repuestoForm.precio_unitario} onChange={handleRepuestoChange} disabled={Boolean(repuestoForm.id_repuesto) && !isAdmin} /></div>
-                    <div className="col-md-3"><label className="form-label">Cubierto garantia</label><select className="form-select" name="cubierto_garantia" value={repuestoForm.cubierto_garantia} onChange={handleRepuestoChange}><option value="false">No</option><option value="true">Si</option></select></div>
-                    <div className="col-md-9"><label className="form-label">Observacion</label><input className="form-control" name="observacion" value={repuestoForm.observacion} onChange={handleRepuestoChange} /></div>
-                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "repuesto"}>{saving === "repuesto" ? "Guardando..." : "Agregar repuesto"}</button></div>
+                {activeTab === "repuestos" ? <div className="detail-card">
+                  <div className="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 className="h6 mb-0">Repuestos del borrador</h3><strong>Total repuestos: {formatCurrency(totalRepuestos)}</strong></div>
+                  {detalle.repuestos.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Repuesto</th><th>Stock</th><th>Cantidad</th><th>Precio aplicado</th><th>Subtotal</th><th>Acciones</th></tr></thead><tbody>{detalle.repuestos.map((repuesto) => <tr key={repuesto.id_repuesto_usado}><td>{repuesto.nombre_repuesto}<span className="table-subtext">{repuesto.codigo_repuesto || "Registro heredado"}</span></td><td>{repuesto.stock_disponible ?? "Sin catalogo"}</td><td>{canEditTrabajo && repuesto.id_repuesto ? <input className="form-control form-control-sm" type="number" min="1" max={repuesto.stock_disponible} value={cantidadesRepuestos[repuesto.id_repuesto_usado] ?? repuesto.cantidad} onChange={(event) => setCantidadesRepuestos((current) => ({ ...current, [repuesto.id_repuesto_usado]: event.target.value }))} /> : repuesto.cantidad}</td><td>{formatCurrency(repuesto.precio_unitario)}</td><td>{formatCurrency(repuesto.subtotal)}</td><td>{canEditTrabajo && repuesto.id_repuesto ? <div className="d-flex flex-wrap gap-2"><button className="btn btn-outline-primary btn-sm" type="button" disabled={saving === `repuesto-${repuesto.id_repuesto_usado}`} onClick={() => handleUpdateRepuesto(repuesto)}>Actualizar</button><button className="btn btn-outline-danger btn-sm" type="button" disabled={saving === `repuesto-${repuesto.id_repuesto_usado}`} onClick={() => handleRemoveRepuesto(repuesto)}>Retirar</button></div> : "Solo lectura"}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay repuestos registrados.</p>}
+                  {canEditTrabajo ? <form className="row g-3 mt-2" onSubmit={handleAddRepuesto}>
+                    <div className="col-md-6"><label className="form-label">Repuesto del catalogo</label><select className="form-select" name="id_repuesto" value={repuestoForm.id_repuesto} onChange={handleRepuestoChange} required><option value="">Selecciona un repuesto</option>{catalogoRepuestos.filter((repuesto) => repuesto.estado === "ACTIVO").map((repuesto) => <option key={repuesto.id_repuesto} value={repuesto.id_repuesto}>{repuesto.nombre} - stock {repuesto.stock} - {formatCurrency(repuesto.precio)}</option>)}</select></div>
+                    <div className="col-md-2"><label className="form-label">Cantidad</label><input className="form-control" name="cantidad" type="number" min="1" max={repuestoSeleccionado?.stock} value={repuestoForm.cantidad} onChange={handleRepuestoChange} required /></div>
+                    <div className="col-md-4"><label className="form-label">Precio y stock</label><div className="form-control bg-body-tertiary">{repuestoSeleccionado ? `${formatCurrency(repuestoSeleccionado.precio)} · ${repuestoSeleccionado.stock} disponibles` : "Selecciona del catalogo"}</div></div>
+                    <div className="col-12"><label className="form-label">Observacion</label><input className="form-control" name="observacion" value={repuestoForm.observacion} onChange={handleRepuestoChange} /></div>
+                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "repuesto" || !repuestoForm.id_repuesto}>{saving === "repuesto" ? "Guardando..." : "Agregar repuesto"}</button></div>
                   </form> : null}
+                  {borradorFinalizado ? <p className="alert alert-info mt-3 mb-0">El borrador tecnico esta finalizado y sus repuestos quedaron en solo lectura.</p> : null}
                 </div> : null}
-
-                {!isRecepcionista && activeTab === "cotizacion" ? <div className="detail-card">
-                  <div className="detail-grid mb-3"><DetailItem label="Valor ingreso">{formatCurrency(detalle.cotizacion?.valor_ingreso ?? detalle.orden.valor_ingreso)}</DetailItem><DetailItem label="Total repuestos">{formatCurrency(detalle.cotizacion?.total_repuestos ?? totalRepuestos)}</DetailItem><DetailItem label="Mano de obra">{formatCurrency(detalle.cotizacion?.mano_obra ?? detalle.orden.mano_obra)}</DetailItem><DetailItem label="Total general">{formatCurrency(detalle.cotizacion?.total_general ?? detalle.cotizacion?.total ?? totalRepuestos)}</DetailItem><DetailItem label="Estado"><StatusBadge value={detalle.cotizacion?.estado || "BORRADOR"} /></DetailItem></div>
-                  {!isReadOnly ? <form className="row g-3" onSubmit={handleSaveCotizacion}><div className="col-md-3"><label className="form-label">Mano de obra</label><input className="form-control" type="number" min="0" value={cotizacionForm.mano_obra} onChange={(event) => setCotizacionForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-3"><label className="form-label">Estado</label><select className="form-select" value={cotizacionForm.estado} onChange={(event) => setCotizacionForm((current) => ({ ...current, estado: event.target.value }))}><option>BORRADOR</option><option>ENVIADA</option><option>APROBADA</option><option>RECHAZADA</option></select></div><div className="col-md-6"><label className="form-label">Observacion</label><input className="form-control" value={cotizacionForm.observacion} onChange={(event) => setCotizacionForm((current) => ({ ...current, observacion: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "cotizacion"}>{saving === "cotizacion" ? "Guardando..." : "Guardar cotizacion"}</button></div></form> : null}
+                {activeTab === "borrador" ? <div className="detail-card">
+                  <h3 className="h6">Borrador tecnico</h3>
+                  <div className="detail-grid mb-3"><DetailItem label="Valor ingreso aplicable">{formatCurrency(valorIngresoAplicado)}</DetailItem><DetailItem label="Total repuestos">{formatCurrency(totalRepuestos)}</DetailItem><DetailItem label="Mano de obra estimada">{formatCurrency(manoObra)}</DetailItem><DetailItem label="Total preliminar">{formatCurrency(totalPreliminar)}</DetailItem><DetailItem label="Total cliente">{totalCliente === null ? "No usa cotizacion normal" : formatCurrency(totalCliente)}</DetailItem><DetailItem label="Estado borrador"><StatusBadge value={borradorFinalizado ? "FINALIZADO" : (detalle.cotizacion?.estado || "EN_EDICION")} /></DetailItem></div>
+                  {garantiaAprobada ? <p className="alert alert-success">Garantia aprobada: el total del cliente es $0 y no se creara una cotizacion pagada.</p> : null}
+                  {isGarantiaOrder && !hasFinalDecision ? <p className="alert alert-warning">Debes registrar la decision de garantia antes de finalizar.</p> : null}
+                  {["MANTENCION", "PUESTA_EN_MARCHA"].includes(tipoOrden) ? <p className="alert alert-info">Este tipo conserva el trabajo tecnico, pero no crea una cotizacion normal.</p> : null}
+                  {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
+                  {canEditTrabajo ? <div className="mt-3"><button className="btn btn-primary" type="button" disabled={!canFinalizarBorrador || saving === "finalizar-borrador"} onClick={handleFinalizarBorrador}>{saving === "finalizar-borrador" ? "Finalizando..." : "Finalizar borrador tecnico"}</button>{!hasDiagnostico ? <span className="text-secondary ms-3">Primero registra el diagnostico.</span> : null}</div> : null}
+                  {borradorFinalizado ? <p className="alert alert-info mt-3 mb-0">El trabajo tecnico fue finalizado y quedo preparado para la siguiente etapa.</p> : null}
                 </div> : null}
-
                 {!isRecepcionista && activeTab === "garantia" ? <div className="detail-card">
                   <h3 className="h6">Decision final de garantia</h3>
                   <div className="detail-grid mb-3">
