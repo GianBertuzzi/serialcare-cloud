@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import StatusBadge from "./StatusBadge.jsx";
 import api, { createEvidenciaManual, uploadEvidenciaOrden } from "../services/api";
@@ -18,6 +18,7 @@ const ALLOWED_EVIDENCE_FILE_TYPES = new Set([
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ]);
 const initialDecisionForm = { observacion: "" };
+const initialDiscountForm = { tipo_descuento: "", valor_descuento: "0", motivo_descuento: "" };
 
 function DetailItem({ label, children }) {
   return <div className="detail-box"><span>{label}</span><strong>{children || "Sin dato"}</strong></div>;
@@ -50,6 +51,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const [evidenciaForm, setEvidenciaForm] = useState(initialEvidenciaForm);
   const [evidenciaUploadForm, setEvidenciaUploadForm] = useState(initialEvidenciaUploadForm);
   const [decisionForm, setDecisionForm] = useState(initialDecisionForm);
+  const [discountForm, setDiscountForm] = useState(initialDiscountForm);
   const [cantidadesRepuestos, setCantidadesRepuestos] = useState({});
 
   const idOrden = orden?.id_orden;
@@ -70,6 +72,11 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
 
       setDecisionForm({
         observacion: nextDetalle?.orden?.observacion_admin || nextDetalle?.garantia?.observacion_admin || ""
+      });
+      setDiscountForm({
+        tipo_descuento: nextDetalle?.cotizacion?.tipo_descuento || "",
+        valor_descuento: String(nextDetalle?.cotizacion?.valor_descuento ?? 0),
+        motivo_descuento: nextDetalle?.cotizacion?.motivo_descuento || ""
       });
       setCantidadesRepuestos(Object.fromEntries((nextDetalle?.repuestos || []).map((repuesto) => [
         repuesto.id_repuesto_usado,
@@ -135,6 +142,14 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const totalCliente = garantiaAprobada ? 0 : (requiereCotizacion ? totalPreliminar : null);
   const canFinalizarBorrador = canEditTrabajo && hasDiagnostico && (!isGarantiaOrder || hasFinalDecision);
   const repuestoSeleccionado = catalogoRepuestos.find((repuesto) => String(repuesto.id_repuesto) === String(repuestoForm.id_repuesto));
+  const cotizacionActual = detalle?.cotizacion || null;
+  const subtotalCotizacion = Number(cotizacionActual?.subtotal_original ?? totalPreliminar);
+  const totalFinalCotizacion = Number(cotizacionActual?.total_final ?? subtotalCotizacion);
+  const canEditDiscount = isAdmin
+    && !isReadOnly
+    && cotizacionActual?.estado === "BORRADOR"
+    && cotizacionActual?.cerrada === false
+    && cotizacionActual?.pdf_estado === "NO_GENERADO";
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -232,6 +247,25 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     }
   }
 
+  async function handleSaveDiscount(event) {
+    event.preventDefault();
+    setSaving("descuento");
+    setError("");
+    setSuccess("");
+    const tipoDescuento = discountForm.tipo_descuento || null;
+    try {
+      await api.put(`/ordenes/${idOrden}/cotizaciones/${cotizacionActual.version}/descuento`, {
+        tipo_descuento: tipoDescuento,
+        valor_descuento: tipoDescuento ? Number(discountForm.valor_descuento) : 0,
+        motivo_descuento: tipoDescuento ? discountForm.motivo_descuento.trim() : null
+      });
+      await afterMutation(tipoDescuento ? "Descuento actualizado correctamente." : "Descuento retirado correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo actualizar el descuento.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleFinalizarBorrador() {
     setSaving("finalizar-borrador");
     setError("");
@@ -417,11 +451,23 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                 </div> : null}
                 {activeTab === "borrador" ? <div className="detail-card">
                   <h3 className="h6">Borrador tecnico</h3>
-                  <div className="detail-grid mb-3"><DetailItem label="Valor ingreso aplicable">{formatCurrency(valorIngresoAplicado)}</DetailItem><DetailItem label="Total repuestos">{formatCurrency(totalRepuestos)}</DetailItem><DetailItem label="Mano de obra estimada">{formatCurrency(manoObra)}</DetailItem><DetailItem label="Total preliminar">{formatCurrency(totalPreliminar)}</DetailItem><DetailItem label="Total cliente">{totalCliente === null ? "No usa cotizacion normal" : formatCurrency(totalCliente)}</DetailItem><DetailItem label="Estado borrador"><StatusBadge value={borradorFinalizado ? "FINALIZADO" : (detalle.cotizacion?.estado || "EN_EDICION")} /></DetailItem></div>
+                  <div className="detail-grid mb-3">
+                    <DetailItem label="Version actual">{cotizacionActual ? `Version ${cotizacionActual.version}` : "Sin cotizacion"}</DetailItem>
+                    <DetailItem label="Subtotal original">{cotizacionActual ? formatCurrency(subtotalCotizacion) : "No aplica"}</DetailItem>
+                    <DetailItem label="Descuento">{cotizacionActual?.tipo_descuento === "PORCENTAJE" ? `${cotizacionActual.valor_descuento}%` : cotizacionActual?.tipo_descuento === "MONTO_FIJO" ? formatCurrency(cotizacionActual.valor_descuento) : "Sin descuento"}</DetailItem>
+                    <DetailItem label="Total final">{cotizacionActual ? formatCurrency(totalFinalCotizacion) : (totalCliente === null ? "No usa cotizacion normal" : formatCurrency(totalCliente))}</DetailItem>
+                    <DetailItem label="Estado"><StatusBadge value={borradorFinalizado ? "FINALIZADO" : (cotizacionActual?.estado || "EN_EDICION")} /></DetailItem>
+                    <DetailItem label="PDF"><StatusBadge value={cotizacionActual?.pdf_estado || "NO_GENERADO"} /></DetailItem>
+                  </div>
                   {garantiaAprobada ? <p className="alert alert-success">Garantia aprobada: el total del cliente es $0 y no se creara una cotizacion pagada.</p> : null}
                   {isGarantiaOrder && !hasFinalDecision ? <p className="alert alert-warning">Debes registrar la decision de garantia antes de finalizar.</p> : null}
                   {["MANTENCION", "PUESTA_EN_MARCHA"].includes(tipoOrden) ? <p className="alert alert-info">Este tipo conserva el trabajo tecnico, pero no crea una cotizacion normal.</p> : null}
-                  {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
+                  {canEditDiscount ? <form className="row g-3 mb-3" onSubmit={handleSaveDiscount}>
+                    <div className="col-md-4"><label className="form-label">Tipo de descuento</label><select className="form-select" value={discountForm.tipo_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, tipo_descuento: event.target.value, valor_descuento: event.target.value ? current.valor_descuento : "0", motivo_descuento: event.target.value ? current.motivo_descuento : "" }))}><option value="">Sin descuento</option><option value="PORCENTAJE">Porcentaje</option><option value="MONTO_FIJO">Monto fijo</option></select></div>
+                    <div className="col-md-3"><label className="form-label">Valor</label><input className="form-control" type="number" min="0" max={discountForm.tipo_descuento === "PORCENTAJE" ? "100" : undefined} step="0.01" disabled={!discountForm.tipo_descuento} value={discountForm.valor_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, valor_descuento: event.target.value }))} /></div>
+                    <div className="col-md-5"><label className="form-label">Motivo</label><input className="form-control" disabled={!discountForm.tipo_descuento} required={Boolean(discountForm.tipo_descuento)} value={discountForm.motivo_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, motivo_descuento: event.target.value }))} /></div>
+                    <div className="col-12"><button className="btn btn-outline-primary" disabled={saving === "descuento"}>{saving === "descuento" ? "Guardando..." : "Guardar descuento"}</button></div>
+                  </form> : null}                  {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
                   {canEditTrabajo ? <div className="mt-3"><button className="btn btn-primary" type="button" disabled={!canFinalizarBorrador || saving === "finalizar-borrador"} onClick={handleFinalizarBorrador}>{saving === "finalizar-borrador" ? "Finalizando..." : "Finalizar borrador tecnico"}</button>{!hasDiagnostico ? <span className="text-secondary ms-3">Primero registra el diagnostico.</span> : null}</div> : null}
                   {borradorFinalizado ? <p className="alert alert-info mt-3 mb-0">El trabajo tecnico fue finalizado y quedo preparado para la siguiente etapa.</p> : null}
                 </div> : null}

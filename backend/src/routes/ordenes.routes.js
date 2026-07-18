@@ -178,6 +178,13 @@ function parseMoney(value, defaultValue = 0) {
   return Math.round(numberValue);
 }
 
+function parseNonNegativeDecimal(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue) || numberValue < 0) return null;
+  return Math.round((numberValue + Number.EPSILON) * 100) / 100;
+}
+
 async function getUsuarioSucursal(idUsuario, client = db) {
   const result = await client.query(
     `SELECT
@@ -267,68 +274,31 @@ async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false, allowCl
   return { orden, usuarioSucursal };
 }
 
-async function refreshCotizacion(idOrden, client = db, estado = null, observacion = null, valorIngresoOverride = null) {
-  const totalResult = await client.query(
-    `SELECT COALESCE(SUM(subtotal), 0) AS total_repuestos
-    FROM repuestos_usados
+async function createCotizacionVersion(client, idOrden, totalRepuestos, valorIngreso, manoObra, observacion = null) {
+  const versionResult = await client.query(
+    `SELECT COALESCE(MAX(version), 0) + 1 AS siguiente_version
+    FROM cotizaciones
     WHERE id_orden = $1`,
     [idOrden]
   );
-
-  const ordenResult = await client.query(
-    `SELECT valor_ingreso, mano_obra
-    FROM ordenes_servicio
-    WHERE id_orden = $1
-    LIMIT 1`,
-    [idOrden]
-  );
-
-  if (ordenResult.rows.length === 0) {
-    return null;
-  }
-
-  const totalRepuestos = Number(totalResult.rows[0]?.total_repuestos || 0);
-  const valorIngreso = valorIngresoOverride === null
-    ? Number(ordenResult.rows[0]?.valor_ingreso || 0)
-    : Number(valorIngresoOverride);
-  const manoObra = Number(ordenResult.rows[0]?.mano_obra || 0);
-  const totalGeneral = totalRepuestos + valorIngreso + manoObra;
-
+  const version = Number(versionResult.rows[0].siguiente_version);
+  const subtotalOriginal = totalRepuestos + valorIngreso + manoObra;
   const result = await client.query(
     `INSERT INTO cotizaciones (
-      id_orden,
-      total_repuestos,
-      valor_ingreso,
-      mano_obra,
-      total_general,
-      total,
-      estado,
-      observacion
+      id_orden, version, total_repuestos, valor_ingreso, mano_obra,
+      total_general, total, estado, observacion, subtotal_original,
+      tipo_descuento, valor_descuento, total_final, cerrada, pdf_estado
     )
-    VALUES ($1, $2, $3, $4, $5, $5, COALESCE($6, 'BORRADOR'), $7)
-    ON CONFLICT (id_orden) DO UPDATE
-    SET total_repuestos = EXCLUDED.total_repuestos,
-        valor_ingreso = EXCLUDED.valor_ingreso,
-        mano_obra = EXCLUDED.mano_obra,
-        total_general = EXCLUDED.total_general,
-        total = EXCLUDED.total,
-        estado = COALESCE($6, cotizaciones.estado),
-        observacion = COALESCE($7, cotizaciones.observacion),
-        fecha_actualizacion = CURRENT_TIMESTAMP
+    VALUES ($1, $2, $3, $4, $5, $6, $6, 'BORRADOR', $7, $8, NULL, 0, $8, FALSE, 'NO_GENERADO')
     RETURNING
-      id_cotizacion,
-      id_orden,
-      total_repuestos,
-      valor_ingreso,
-      mano_obra,
-      total_general,
-      total,
-      estado,
-      observacion,
-      fecha_creacion,
-      fecha_actualizacion,
-      fecha_respuesta`,
-    [idOrden, totalRepuestos, valorIngreso, manoObra, totalGeneral, estado, observacion]
+      id_cotizacion, id_orden, version, total_repuestos, valor_ingreso,
+      mano_obra, total_general, total, estado, observacion,
+      subtotal_original, tipo_descuento, valor_descuento, motivo_descuento,
+      id_descuento_aplicado_por, fecha_descuento, total_final, cerrada,
+      fecha_cierre, id_cerrada_por, pdf_estado, pdf_nombre_archivo,
+      pdf_blob_name, pdf_url, pdf_hash, pdf_mime_type, pdf_size_bytes,
+      fecha_pdf, fecha_creacion, fecha_actualizacion, fecha_respuesta`,
+    [idOrden, version, totalRepuestos, valorIngreso, manoObra, subtotalOriginal, observacion, subtotalOriginal]
   );
 
   return result.rows[0];
@@ -364,25 +334,34 @@ async function getRepuestos(idOrden) {
 async function getCotizacion(idOrden) {
   const result = await db.query(
     `SELECT
-      id_cotizacion,
-      id_orden,
-      total_repuestos,
-      valor_ingreso,
-      mano_obra,
-      total_general,
-      total,
-      estado,
-      observacion,
-      fecha_creacion,
-      fecha_actualizacion,
-      fecha_respuesta
+      id_cotizacion, id_orden, version, total_repuestos, valor_ingreso,
+      mano_obra, total_general, total, estado, observacion,
+      subtotal_original, tipo_descuento, valor_descuento, motivo_descuento,
+      id_descuento_aplicado_por, fecha_descuento, total_final, cerrada,
+      fecha_cierre, id_cerrada_por, pdf_estado, pdf_nombre_archivo,
+      pdf_blob_name, pdf_url, pdf_hash, pdf_mime_type, pdf_size_bytes,
+      fecha_pdf, fecha_creacion, fecha_actualizacion, fecha_respuesta
     FROM cotizaciones
     WHERE id_orden = $1
+    ORDER BY version DESC
     LIMIT 1`,
     [idOrden]
   );
 
   return result.rows[0] || null;
+}
+
+async function getCotizacionesResumen(idOrden) {
+  const result = await db.query(
+    `SELECT version, estado, subtotal_original, valor_descuento,
+      total_final, cerrada, pdf_estado, fecha_creacion
+    FROM cotizaciones
+    WHERE id_orden = $1
+    ORDER BY version DESC`,
+    [idOrden]
+  );
+
+  return result.rows;
 }
 
 async function getBorradorTecnicoFinalizado(idOrden) {
@@ -432,9 +411,10 @@ async function getGarantiaPorOrden(idOrden) {
 }
 
 async function buildOrdenDetalle(orden) {
-  const [repuestos, cotizacion, garantia, evidencias, borradorTecnicoFinalizado] = await Promise.all([
+  const [repuestos, cotizacion, cotizaciones, garantia, evidencias, borradorTecnicoFinalizado] = await Promise.all([
     getRepuestos(orden.id_orden),
     getCotizacion(orden.id_orden),
+    getCotizacionesResumen(orden.id_orden),
     getGarantiaPorOrden(orden.id_orden),
     getEvidencias(orden.id_orden),
     getBorradorTecnicoFinalizado(orden.id_orden)
@@ -484,6 +464,7 @@ async function buildOrdenDetalle(orden) {
       : null,
     repuestos,
     cotizacion,
+    cotizaciones,
     garantia,
     evidencias,
     borrador_tecnico_finalizado: borradorTecnicoFinalizado
@@ -913,6 +894,7 @@ router.get("/:id/detalle", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", "CL
     if (req.usuario.rol === "RECEPCIONISTA" && !detalle.borrador_tecnico_finalizado) {
       detalle.repuestos = [];
       detalle.cotizacion = null;
+      detalle.cotizaciones = [];
     }
 
     return res.json({ detalle });
@@ -1289,15 +1271,17 @@ async function getOrdenTrabajoEditable(client, idOrden, usuario) {
   }
 
   const cotizacionResult = await client.query(
-    `SELECT id_cotizacion, estado
+    `SELECT id_cotizacion, estado, version, cerrada, pdf_estado
     FROM cotizaciones
     WHERE id_orden = $1
+    ORDER BY version DESC
+    LIMIT 1
     FOR UPDATE`,
     [idOrden]
   );
   const cotizacion = cotizacionResult.rows[0] || null;
 
-  if (cotizacion && cotizacion.estado !== "BORRADOR") {
+  if (cotizacion && (cotizacion.estado !== "BORRADOR" || cotizacion.cerrada || cotizacion.pdf_estado !== "NO_GENERADO")) {
     return { status: 409, error: "La cotizacion ya no permite modificar el trabajo tecnico" };
   }
 
@@ -1639,15 +1623,185 @@ router.get("/:id/cotizacion", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", 
       return res.status(access.status).json({ error: access.error });
     }
 
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(access.orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
     if (req.usuario.rol === "RECEPCIONISTA" && !(await getBorradorTecnicoFinalizado(access.orden.id_orden))) {
       return res.status(409).json({ error: "El borrador tecnico aun no esta finalizado" });
     }
 
-    const cotizacion = await getCotizacion(access.orden.id_orden);
-    return res.json({ cotizacion });
+    const [cotizacion, versiones] = await Promise.all([
+      getCotizacion(access.orden.id_orden),
+      getCotizacionesResumen(access.orden.id_orden)
+    ]);
+    return res.json({ cotizacion, versiones });
   } catch (error) {
     console.error("Error obteniendo cotizacion:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  }
+});
+
+router.put("/:id/cotizaciones/:version/descuento", verificarRol("ADMIN"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const version = Number(req.params.version);
+  const camposPermitidos = new Set(["tipo_descuento", "valor_descuento", "motivo_descuento"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
+  const tipoDescuento = req.body?.tipo_descuento === null || clean(req.body?.tipo_descuento) === ""
+    ? null
+    : clean(req.body.tipo_descuento).toUpperCase();
+  const valorDescuento = parseNonNegativeDecimal(req.body?.valor_descuento);
+  const motivoDescuento = tipoDescuento ? clean(req.body?.motivo_descuento) : null;
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(version) || version <= 0) {
+    return res.status(400).json({ error: "id de orden y version deben ser validos" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite modificar tipo_descuento, valor_descuento y motivo_descuento" });
+  }
+
+  if (![null, "PORCENTAJE", "MONTO_FIJO"].includes(tipoDescuento)) {
+    return res.status(400).json({ error: "tipo_descuento no es valido" });
+  }
+
+  if (valorDescuento === null) {
+    return res.status(400).json({ error: "valor_descuento debe ser un numero mayor o igual a 0" });
+  }
+
+  if (tipoDescuento === null && valorDescuento !== 0) {
+    return res.status(400).json({ error: "Sin descuento, valor_descuento debe ser 0" });
+  }
+
+  if (tipoDescuento === "PORCENTAJE" && valorDescuento > 100) {
+    return res.status(400).json({ error: "El porcentaje debe estar entre 0 y 100" });
+  }
+
+  if (tipoDescuento && !motivoDescuento) {
+    return res.status(400).json({ error: "motivo_descuento es obligatorio al aplicar un descuento" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT id_orden, estado
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    const cotizacionResult = await client.query(
+      `SELECT id_cotizacion, subtotal_original, estado, cerrada, pdf_estado,
+        (SELECT MAX(version) FROM cotizaciones WHERE id_orden = $1) AS ultima_version
+      FROM cotizaciones
+      WHERE id_orden = $1
+        AND version = $2
+      FOR UPDATE`,
+      [idOrden, version]
+    );
+
+    if (cotizacionResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Cotizacion no encontrada para la version indicada" });
+    }
+
+    const cotizacionActual = cotizacionResult.rows[0];
+
+    if (Number(cotizacionActual.ultima_version) !== version) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Solo se puede modificar la version mas reciente" });
+    }
+
+    if (cotizacionActual.estado !== "BORRADOR" || cotizacionActual.cerrada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La version de cotizacion no permite descuentos" });
+    }
+
+    if (cotizacionActual.pdf_estado !== "NO_GENERADO") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "No se puede descontar una cotizacion con PDF generado o en proceso" });
+    }
+
+    const subtotalOriginal = Number(cotizacionActual.subtotal_original || 0);
+    const montoDescuento = tipoDescuento === "PORCENTAJE"
+      ? Math.round((subtotalOriginal * valorDescuento / 100 + Number.EPSILON) * 100) / 100
+      : valorDescuento;
+
+    if (montoDescuento > subtotalOriginal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "El descuento no puede superar el subtotal original" });
+    }
+
+    const totalFinal = Math.round((subtotalOriginal - montoDescuento + Number.EPSILON) * 100) / 100;
+    const updateResult = await client.query(
+      `UPDATE cotizaciones
+      SET tipo_descuento = $1,
+          valor_descuento = $2,
+          motivo_descuento = $3,
+          id_descuento_aplicado_por = $4,
+          fecha_descuento = CURRENT_TIMESTAMP,
+          total_final = $5,
+          total = $6,
+          fecha_actualizacion = CURRENT_TIMESTAMP
+      WHERE id_cotizacion = $7
+      RETURNING
+        id_cotizacion, id_orden, version, total_repuestos, valor_ingreso,
+        mano_obra, total_general, total, estado, observacion,
+        subtotal_original, tipo_descuento, valor_descuento, motivo_descuento,
+        id_descuento_aplicado_por, fecha_descuento, total_final, cerrada,
+        fecha_cierre, id_cerrada_por, pdf_estado, pdf_nombre_archivo,
+        pdf_blob_name, pdf_url, pdf_hash, pdf_mime_type, pdf_size_bytes,
+        fecha_pdf, fecha_creacion, fecha_actualizacion, fecha_respuesta`,
+      [tipoDescuento, valorDescuento, motivoDescuento, req.usuario.id_usuario, totalFinal, Math.round(totalFinal), cotizacionActual.id_cotizacion]
+    );
+
+    await client.query(
+      `UPDATE ordenes_servicio
+      SET version = version + 1
+      WHERE id_orden = $1`,
+      [idOrden]
+    );
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, $2, $2, $3, 'APLICAR_DESCUENTO_COTIZACION', $4)`,
+      [
+        idOrden,
+        ordenResult.rows[0].estado,
+        req.usuario.id_usuario,
+        `Version ${version}; tipo ${tipoDescuento || "SIN_DESCUENTO"}; valor ${valorDescuento}; total final ${totalFinal}`
+      ]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ cotizacion: updateResult.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error aplicando descuento a cotizacion:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 
@@ -1730,7 +1884,13 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
     }
 
     if (requiereCotizacion) {
-      cotizacion = await refreshCotizacion(idOrden, client, "BORRADOR", null, valorIngresoAplicado);
+      cotizacion = await createCotizacionVersion(
+        client,
+        idOrden,
+        totalRepuestos,
+        valorIngresoAplicado,
+        manoObra
+      );
     }
 
     await client.query(
@@ -1742,19 +1902,14 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
 
     await client.query(
       `INSERT INTO historial_estados_orden (
-        id_orden,
-        estado_anterior,
-        estado_nuevo,
-        id_usuario,
-        accion,
-        observacion
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
       )
       VALUES ($1, $2, $2, $3, 'FINALIZAR_BORRADOR_TECNICO', $4)`,
       [
         idOrden,
         access.orden.estado,
         req.usuario.id_usuario,
-        `Tipo ${tipoOrden}; total repuestos ${totalRepuestos}; mano de obra ${manoObra}; total cliente ${totalCliente ?? 0}`
+        `Tipo ${tipoOrden}; version ${cotizacion?.version || "SIN_COTIZACION"}; total repuestos ${totalRepuestos}; mano de obra ${manoObra}; total cliente ${totalCliente ?? 0}`
       ]
     );
 
@@ -1764,6 +1919,7 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
       resumen: {
         tipo_orden: tipoOrden,
         requiere_cotizacion: requiereCotizacion,
+        version: cotizacion?.version || null,
         total_repuestos: totalRepuestos,
         mano_obra: manoObra,
         valor_ingreso: requiereCotizacion ? valorIngresoAplicado : valorIngresoOrden,
@@ -1773,12 +1929,16 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
     });
   } catch (error) {
     await client.query("ROLLBACK");
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "La version de cotizacion ya fue creada" });
+    }
     console.error("Error finalizando borrador tecnico:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   } finally {
     client.release();
   }
 });
+
 router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);
