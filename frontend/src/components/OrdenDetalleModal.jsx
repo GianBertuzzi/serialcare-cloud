@@ -31,6 +31,8 @@ function isHttpUrl(value) {
 function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
   const { user } = useAuth();
   const isAdmin = user?.rol === "ADMIN";
+  const isRecepcionista = user?.rol === "RECEPCIONISTA";
+  const isReadOnly = readOnly || isRecepcionista;
   const [activeTab, setActiveTab] = useState("resumen");
   const [detalle, setDetalle] = useState(null);
   const [catalogoRepuestos, setCatalogoRepuestos] = useState([]);
@@ -78,7 +80,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
   }
 
   async function loadCatalogoRepuestos() {
-    if (readOnly) return;
+    if (isReadOnly) return;
     try {
       const response = await api.get("/repuestos");
       setCatalogoRepuestos(response.data.repuestos || []);
@@ -101,7 +103,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
 
   const totalRepuestos = useMemo(() => (detalle?.repuestos || []).reduce((total, repuesto) => total + Number(repuesto.subtotal ?? Number(repuesto.cantidad || 0) * Number(repuesto.precio_unitario || 0)), 0), [detalle]);
   const activeGarantia = detalle?.garantia && ["PENDIENTE", "EN_REVISION"].includes(detalle.garantia.estado);
-  const canRequestGarantia = !readOnly && !activeGarantia;
+  const canRequestGarantia = !isReadOnly && !activeGarantia;
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -273,15 +275,20 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
 
   if (!orden) return null;
 
-  const tabs = [
-    ["resumen", "Resumen"],
-    ["producto", "Cliente / Producto"],
-    ["diagnostico", "Diagnostico"],
-    ["repuestos", "Repuestos usados"],
-    ["cotizacion", "Cotizacion"],
-    ["garantia", "Garantia"],
-    ["evidencias", "Evidencias"]
-  ];
+  const tabs = isRecepcionista
+    ? [
+        ["resumen", "Resumen"],
+        ["producto", "Cliente / Maquina"]
+      ]
+    : [
+        ["resumen", "Resumen"],
+        ["producto", "Cliente / Producto"],
+        ["diagnostico", "Diagnostico"],
+        ["repuestos", "Repuestos usados"],
+        ["cotizacion", "Cotizacion"],
+        ["garantia", "Garantia"],
+        ["evidencias", "Evidencias"]
+      ];
 
   return (
     <>
@@ -309,22 +316,28 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
 
                 {activeTab === "resumen" ? <div className="detail-grid">
                   <DetailItem label="Estado"><StatusBadge value={detalle.orden.estado} /></DetailItem>
-                  <DetailItem label="Tipo atencion">{detalle.orden.tipo_atencion || detalle.orden.tipo_orden}</DetailItem>
+                  <DetailItem label={isRecepcionista ? "Tipo de orden" : "Tipo atencion"}>{detalle.orden.tipo_orden || detalle.orden.tipo_atencion}</DetailItem>
                   <DetailItem label="Tipo de maquina">{detalle.orden.tipo_maquina}</DetailItem>
                   <DetailItem label="Sucursal">{detalle.sucursal?.nombre}</DetailItem>
                   <DetailItem label="Fecha creacion">{formatDate(detalle.orden.fecha_creacion)}</DetailItem>
+                  {isRecepcionista ? <>
+                    <DetailItem label="Responsable">{detalle.orden.responsable_nombre || detalle.orden.tecnico_nombre || "Sin asignar"}</DetailItem>
+                    <DetailItem label="Problema reportado">{detalle.orden.descripcion_problema}</DetailItem>
+                    <DetailItem label="Accesorios recibidos">{detalle.orden.accesorios_recibidos}</DetailItem>
+                    <DetailItem label="Observaciones de recepcion">{detalle.orden.observaciones_recepcion}</DetailItem>
+                  </> : null}
                   <DetailItem label="Valor ingreso">{formatCurrency(detalle.orden.valor_ingreso || detalle.orden.valor_revision)}</DetailItem>
                 </div> : null}
 
                 {activeTab === "producto" ? <div className="row g-3">
                   <div className="col-md-6"><div className="detail-card"><h3 className="h6">Cliente</h3><div className="detail-grid single"><DetailItem label="Nombre">{detalle.cliente?.nombre}</DetailItem><DetailItem label="RUT">{detalle.cliente?.rut}</DetailItem><DetailItem label="Email">{detalle.cliente?.email}</DetailItem><DetailItem label="Telefono">{detalle.cliente?.telefono}</DetailItem></div></div></div>
-                  <div className="col-md-6"><div className="detail-card"><h3 className="h6">Producto</h3><div className="detail-grid single"><DetailItem label="Serie">{detalle.producto.numero_serie}</DetailItem><DetailItem label="Marca">{detalle.producto.marca}</DetailItem><DetailItem label="Modelo">{detalle.producto.modelo}</DetailItem><DetailItem label="Tipo">{detalle.producto.tipo_maquina}</DetailItem><DetailItem label="Garantia"><StatusBadge value={detalle.producto.estado_garantia} /></DetailItem><DetailItem label="Alerta propiedad">{detalle.producto.alerta_propiedad ? "Si" : "No"}</DetailItem></div></div></div>
+                  <div className="col-md-6"><div className="detail-card"><h3 className="h6">{isRecepcionista ? "Maquina" : "Producto"}</h3><div className="detail-grid single"><DetailItem label="Serie">{detalle.producto.numero_serie}</DetailItem><DetailItem label="Marca">{detalle.producto.marca}</DetailItem><DetailItem label="Modelo">{detalle.producto.modelo}</DetailItem><DetailItem label="Tipo">{detalle.producto.tipo_maquina}</DetailItem>{!isRecepcionista ? <><DetailItem label="Garantia"><StatusBadge value={detalle.producto.estado_garantia} /></DetailItem><DetailItem label="Alerta propiedad">{detalle.producto.alerta_propiedad ? "Si" : "No"}</DetailItem></> : null}</div></div></div>
                 </div> : null}
 
-                {activeTab === "diagnostico" ? <div className="detail-card">
+                {!isRecepcionista && activeTab === "diagnostico" ? <div className="detail-card">
                   <h3 className="h6">Diagnostico e informe tecnico</h3>
                   <p><strong>Problema reportado:</strong> {detalle.orden.descripcion_problema || "Sin descripcion"}</p>
-                  {!readOnly ? <form className="row g-3" onSubmit={handleSaveInforme}>
+                  {!isReadOnly ? <form className="row g-3" onSubmit={handleSaveInforme}>
                     <div className="col-md-6"><label className="form-label">Diagnostico</label><textarea className="form-control" value={informeForm.diagnostico} onChange={(event) => setInformeForm((current) => ({ ...current, diagnostico: event.target.value }))} /></div>
                     <div className="col-md-6"><label className="form-label">Informe tecnico / reparacion</label><textarea className="form-control" value={informeForm.informe_tecnico} onChange={(event) => setInformeForm((current) => ({ ...current, informe_tecnico: event.target.value }))} /></div>
                     <div className="col-md-3"><label className="form-label">Mano de obra</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div>
@@ -332,10 +345,10 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                   </form> : <p>{detalle.orden.informe_tecnico || detalle.orden.diagnostico || "Sin informe registrado."}</p>}
                 </div> : null}
 
-                {activeTab === "repuestos" ? <div className="detail-card">
+                {!isRecepcionista && activeTab === "repuestos" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 className="h6 mb-0">Repuestos usados</h3><strong>Total repuestos: {formatCurrency(totalRepuestos)}</strong></div>
                   {detalle.repuestos.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Repuesto</th><th>Cantidad</th><th>Precio unitario</th><th>Total</th><th>Cubre garantia</th><th>Observacion</th></tr></thead><tbody>{detalle.repuestos.map((repuesto) => <tr key={repuesto.id_repuesto_usado}><td>{repuesto.nombre_repuesto}</td><td>{repuesto.cantidad}</td><td>{formatCurrency(repuesto.precio_unitario)}</td><td>{formatCurrency(repuesto.subtotal)}</td><td>{repuesto.cubierto_garantia ? "Si" : "No"}</td><td>{repuesto.observacion || "Sin observacion"}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay repuestos registrados.</p>}
-                  {!readOnly ? <form className="row g-3 mt-2" onSubmit={handleAddRepuesto}>
+                  {!isReadOnly ? <form className="row g-3 mt-2" onSubmit={handleAddRepuesto}>
                     <div className="col-md-4"><label className="form-label">Repuesto catalogo</label><select className="form-select" name="id_repuesto" value={repuestoForm.id_repuesto} onChange={handleRepuestoChange}><option value="">Manual / sin catalogo</option>{catalogoRepuestos.map((repuesto) => <option key={repuesto.id_repuesto} value={repuesto.id_repuesto}>{repuesto.nombre} - {formatCurrency(repuesto.precio)}</option>)}</select></div>
                     <div className="col-md-3"><label className="form-label">Nombre repuesto</label><input className="form-control" name="nombre_repuesto" value={repuestoForm.nombre_repuesto} onChange={handleRepuestoChange} required /></div>
                     <div className="col-md-2"><label className="form-label">Cantidad</label><input className="form-control" name="cantidad" type="number" min="1" value={repuestoForm.cantidad} onChange={handleRepuestoChange} required /></div>
@@ -346,18 +359,18 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                   </form> : null}
                 </div> : null}
 
-                {activeTab === "cotizacion" ? <div className="detail-card">
+                {!isRecepcionista && activeTab === "cotizacion" ? <div className="detail-card">
                   <div className="detail-grid mb-3"><DetailItem label="Valor ingreso">{formatCurrency(detalle.cotizacion?.valor_ingreso ?? detalle.orden.valor_ingreso)}</DetailItem><DetailItem label="Total repuestos">{formatCurrency(detalle.cotizacion?.total_repuestos ?? totalRepuestos)}</DetailItem><DetailItem label="Mano de obra">{formatCurrency(detalle.cotizacion?.mano_obra ?? detalle.orden.mano_obra)}</DetailItem><DetailItem label="Total general">{formatCurrency(detalle.cotizacion?.total_general ?? detalle.cotizacion?.total ?? totalRepuestos)}</DetailItem><DetailItem label="Estado"><StatusBadge value={detalle.cotizacion?.estado || "BORRADOR"} /></DetailItem></div>
-                  {!readOnly ? <form className="row g-3" onSubmit={handleSaveCotizacion}><div className="col-md-3"><label className="form-label">Mano de obra</label><input className="form-control" type="number" min="0" value={cotizacionForm.mano_obra} onChange={(event) => setCotizacionForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-3"><label className="form-label">Estado</label><select className="form-select" value={cotizacionForm.estado} onChange={(event) => setCotizacionForm((current) => ({ ...current, estado: event.target.value }))}><option>BORRADOR</option><option>ENVIADA</option><option>APROBADA</option><option>RECHAZADA</option></select></div><div className="col-md-6"><label className="form-label">Observacion</label><input className="form-control" value={cotizacionForm.observacion} onChange={(event) => setCotizacionForm((current) => ({ ...current, observacion: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "cotizacion"}>{saving === "cotizacion" ? "Guardando..." : "Guardar cotizacion"}</button></div></form> : null}
+                  {!isReadOnly ? <form className="row g-3" onSubmit={handleSaveCotizacion}><div className="col-md-3"><label className="form-label">Mano de obra</label><input className="form-control" type="number" min="0" value={cotizacionForm.mano_obra} onChange={(event) => setCotizacionForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-3"><label className="form-label">Estado</label><select className="form-select" value={cotizacionForm.estado} onChange={(event) => setCotizacionForm((current) => ({ ...current, estado: event.target.value }))}><option>BORRADOR</option><option>ENVIADA</option><option>APROBADA</option><option>RECHAZADA</option></select></div><div className="col-md-6"><label className="form-label">Observacion</label><input className="form-control" value={cotizacionForm.observacion} onChange={(event) => setCotizacionForm((current) => ({ ...current, observacion: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "cotizacion"}>{saving === "cotizacion" ? "Guardando..." : "Guardar cotizacion"}</button></div></form> : null}
                 </div> : null}
 
-                {activeTab === "garantia" ? <div className="detail-card">
+                {!isRecepcionista && activeTab === "garantia" ? <div className="detail-card">
                   {detalle.garantia ? <div className="detail-grid mb-3"><DetailItem label="Estado"><StatusBadge value={detalle.garantia.estado} /></DetailItem><DetailItem label="Solicitud">{formatDate(detalle.garantia.fecha_solicitud)}</DetailItem><DetailItem label="Revision admin">{formatDate(detalle.garantia.fecha_revision)}</DetailItem><DetailItem label="Observacion tecnica">{detalle.garantia.observacion}</DetailItem><DetailItem label="Decision admin">{detalle.garantia.observacion_admin || detalle.orden.observacion_admin || "Sin decision"}</DetailItem></div> : <p className="empty-state">No hay solicitud de garantia para esta orden.</p>}
-                  {!readOnly && isAdmin ? <form className="row g-3" onSubmit={handleDecisionGarantia}><div className="col-md-4"><label className="form-label">Decision final</label><select className="form-select" value={decisionForm.garantia_aprobada_por_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, garantia_aprobada_por_admin: event.target.value }))}><option value="true">Aceptar como garantia</option><option value="false">Marcar como reparacion comun</option></select></div><div className="col-md-8"><label className="form-label">Observacion admin</label><input className="form-control" value={decisionForm.observacion_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, observacion_admin: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "decision"}>{saving === "decision" ? "Guardando..." : "Guardar decision"}</button></div></form> : null}
+                  {!isReadOnly && isAdmin ? <form className="row g-3" onSubmit={handleDecisionGarantia}><div className="col-md-4"><label className="form-label">Decision final</label><select className="form-select" value={decisionForm.garantia_aprobada_por_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, garantia_aprobada_por_admin: event.target.value }))}><option value="true">Aceptar como garantia</option><option value="false">Marcar como reparacion comun</option></select></div><div className="col-md-8"><label className="form-label">Observacion admin</label><input className="form-control" value={decisionForm.observacion_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, observacion_admin: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "decision"}>{saving === "decision" ? "Guardando..." : "Guardar decision"}</button></div></form> : null}
                   {canRequestGarantia && !isAdmin ? <form className="mt-3" onSubmit={handleSolicitarGarantia}><label className="form-label">Motivo u observacion</label><textarea className="form-control" value={garantiaForm.observacion} onChange={(event) => setGarantiaForm({ observacion: event.target.value })} required /><button className="btn btn-primary mt-3" disabled={saving === "garantia"}>{saving === "garantia" ? "Solicitando..." : "Solicitar garantia"}</button></form> : null}
                 </div> : null}
 
-                {activeTab === "evidencias" ? <div className="detail-card">
+                {!isRecepcionista && activeTab === "evidencias" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
                     <h3 className="h6 mb-0">Evidencias</h3>
                     <span className="table-count">{detalle.evidencias.length} registros</span>
@@ -368,7 +381,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                     return <tr key={evidencia.id_evidencia}><td>{evidencia.tipo}</td><td>{evidencia.nombre_archivo}</td><td>{isHttpUrl(evidenciaUrl) ? <a className="btn btn-outline-primary btn-sm" href={evidenciaUrl} target="_blank" rel="noreferrer">Ver archivo</a> : (evidenciaUrl || "Sin referencia")}</td><td>{evidencia.descripcion || "Sin descripcion"}</td><td className="date-cell">{formatDate(evidencia.fecha_subida || evidencia.fecha_creacion)}</td></tr>;
                   })}</tbody></table></div> : <p className="empty-state">No hay evidencias registradas.</p>}
 
-                  {!readOnly ? <div className="row g-3 mt-2">
+                  {!isReadOnly ? <div className="row g-3 mt-2">
                     <div className="col-lg-6">
                       <form className="evidence-form border rounded-2 p-3 h-100" onSubmit={handleUploadEvidencia}>
                         <h4 className="h6 mb-3">Subir archivo real</h4>

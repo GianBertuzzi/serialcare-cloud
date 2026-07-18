@@ -74,13 +74,12 @@ function OrdenesIngreso() {
     { key: "fecha", label: "Fecha", searchValue: (orden) => formatDate(orden.fecha_creacion), sortValue: (orden) => orden.fecha_creacion, render: (orden) => formatDate(orden.fecha_creacion) },
     { key: "acciones", label: "Acciones", searchable: false, sortable: false, render: (orden) => (
       <div className="table-actions">
-        {isAdmin ? <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => setSelected(orden)}>Ver detalle</button> : null}
+        <button className="btn btn-outline-primary btn-sm" type="button" onClick={() => setSelected(orden)}>Ver detalle</button>
         {isAdmin && orden.estado === "INGRESADA" && !orden.id_responsable ? (
           <button className="btn btn-primary btn-sm" type="button" disabled={takingId === orden.id_orden} onClick={() => handleTake(orden.id_orden)}>
             {takingId === orden.id_orden ? "Tomando..." : "Tomar orden"}
           </button>
         ) : null}
-        {!isAdmin ? <span className="text-secondary small">Solo consulta</span> : null}
       </div>
     ) }
   ];

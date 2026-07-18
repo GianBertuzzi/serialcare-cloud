@@ -882,7 +882,7 @@ router.post("/:id/tomar", verificarRol("ADMIN", "TECNICO"), async (req, res) => 
   }
 });
 
-router.get("/:id/detalle", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
+router.get("/:id/detalle", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);
 
