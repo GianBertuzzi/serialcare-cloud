@@ -7,7 +7,7 @@ const { uploadEvidenceFile } = require("../services/azureBlob.service");
 
 const router = express.Router();
 
-const TIPOS_ATENCION = ["GARANTIA", "REPARACION", "MANTENCION", "MANTENIMIENTO", "PUESTA_EN_MARCHA"];
+const TIPOS_ATENCION = ["REVISION_GARANTIA", "REPARACION", "MANTENCION", "PUESTA_EN_MARCHA"];
 const TIPOS_EVIDENCIA = ["IMAGEN", "PDF", "LINK", "TEXTO", "DOCUMENTO"];
 const ALLOWED_EVIDENCE_MIME_TYPES = new Set([
   "image/jpeg",
@@ -91,6 +91,18 @@ const ORDEN_SELECT = `SELECT
   o.id_tecnico,
   u.nombre AS tecnico_nombre,
   u.email AS tecnico_email,
+  o.id_creado_por,
+  creador.nombre AS creado_por_nombre,
+  o.id_responsable,
+  responsable.nombre AS responsable_nombre,
+  responsable.email AS responsable_email,
+  o.fecha_toma,
+  o.accesorios_recibidos,
+  o.observaciones_recepcion,
+  o.fecha_lista_entrega,
+  o.fecha_entrega,
+  o.fecha_cierre,
+  o.version,
   o.costo_ingreso_taller,
   o.valor_ingreso,
   o.valor_revision,
@@ -111,7 +123,9 @@ INNER JOIN productos p ON p.id_producto = o.id_producto
 LEFT JOIN productos_modelo pm ON pm.id_modelo = o.id_modelo
 LEFT JOIN tipos_maquina tm ON tm.id_tipo_maquina = o.id_tipo_maquina
 LEFT JOIN tipos_reparacion tr ON tr.id_tipo_reparacion = o.id_tipo_reparacion
-LEFT JOIN usuarios u ON u.id_usuario = o.id_tecnico`;
+LEFT JOIN usuarios u ON u.id_usuario = o.id_tecnico
+LEFT JOIN usuarios creador ON creador.id_usuario = o.id_creado_por
+LEFT JOIN usuarios responsable ON responsable.id_usuario = o.id_responsable`;
 
 const GARANTIA_DETALLE_SELECT = `SELECT
   g.id_garantia,
@@ -147,7 +161,9 @@ function clean(value) {
 
 function normalizeTipoAtencion(value) {
   const tipo = clean(value || "REPARACION").toUpperCase();
-  return tipo === "MANTENIMIENTO" ? "MANTENCION" : tipo;
+  if (tipo === "MANTENIMIENTO") return "MANTENCION";
+  if (tipo === "GARANTIA") return "REVISION_GARANTIA";
+  return tipo;
 }
 
 function parsePositiveInteger(value, defaultValue) {
@@ -182,7 +198,7 @@ async function getUsuarioSucursal(idUsuario, client = db) {
 
 function requireSucursal(usuarioSucursal, res) {
   if (!usuarioSucursal?.id_sucursal) {
-    res.status(400).json({ error: "Usuario ADMIN/TECNICO no tiene sucursal asignada" });
+    res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
     return false;
   }
 
@@ -233,11 +249,19 @@ async function getOrdenParaUsuario(idOrden, usuario, allowMarca = false, allowCl
   const usuarioSucursal = await getUsuarioSucursal(usuario.id_usuario);
 
   if (!usuarioSucursal?.id_sucursal) {
-    return { status: 400, error: "Usuario ADMIN/TECNICO no tiene sucursal asignada" };
+    return { status: 400, error: "Usuario no tiene sucursal asignada" };
   }
 
   if (Number(orden.id_sucursal) !== Number(usuarioSucursal.id_sucursal)) {
     return { status: 404, error: "Orden no encontrada para la sucursal del usuario" };
+  }
+
+  if (
+    usuario.rol === "TECNICO" &&
+    orden.id_responsable &&
+    Number(orden.id_responsable) !== Number(usuario.id_usuario)
+  ) {
+    return { status: 404, error: "Orden no encontrada para el tecnico" };
   }
 
   return { orden, usuarioSucursal };
@@ -447,21 +471,51 @@ async function buildOrdenDetalle(orden) {
     evidencias
   };
 }
-router.get("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const isMarca = req.usuario.rol === "MARCA";
+router.get("/", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
+  const estado = clean(req.query?.estado).toUpperCase();
+  const scope = clean(req.query?.scope).toLowerCase();
+
+  if (estado.length > 30) {
+    return res.status(400).json({ error: "estado no es valido" });
+  }
+
+  if (scope && !["disponibles", "mias"].includes(scope)) {
+    return res.status(400).json({ error: "scope no es valido" });
+  }
 
   try {
-    const usuarioSucursal = isMarca ? null : await getUsuarioSucursal(req.usuario.id_usuario);
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario);
 
-    if (!isMarca && !requireSucursal(usuarioSucursal, res)) {
+    if (!requireSucursal(usuarioSucursal, res)) {
       return;
     }
 
-    const params = isMarca ? [] : [usuarioSucursal.id_sucursal];
+    const conditions = [];
+    const params = [];
+    const addParam = (value) => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+
+    conditions.push(`o.id_sucursal = ${addParam(usuarioSucursal.id_sucursal)}`);
+
+    if (estado) {
+      conditions.push(`o.estado = ${addParam(estado)}`);
+    }
+
+    if (scope === "disponibles") {
+      conditions.push("o.estado = 'INGRESADA'");
+      conditions.push("o.id_responsable IS NULL");
+    } else if (scope === "mias") {
+      conditions.push(`o.id_responsable = ${addParam(req.usuario.id_usuario)}`);
+    } else if (req.usuario.rol === "TECNICO") {
+      const idUsuarioParam = addParam(req.usuario.id_usuario);
+      conditions.push(`((o.estado = 'INGRESADA' AND o.id_responsable IS NULL) OR o.id_responsable = ${idUsuarioParam})`);
+    }
 
     const result = await db.query(
       `${ORDEN_SELECT}
-      ${isMarca ? "" : "WHERE o.id_sucursal = $1"}
+      WHERE ${conditions.join(" AND ")}
       ORDER BY o.fecha_creacion DESC, o.id_orden DESC`,
       params
     );
@@ -473,10 +527,11 @@ router.get("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
   }
 });
 
-router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+router.post("/", verificarRol("ADMIN", "RECEPCIONISTA"), async (req, res) => {
   const tipoAtencion = normalizeTipoAtencion(req.body?.tipo_atencion || req.body?.tipo_orden);
   const descripcionProblema = clean(req.body?.descripcion_problema || req.body?.diagnostico);
-  const idTecnico = req.usuario.rol === "TECNICO" ? Number(req.usuario.id_usuario) : (req.body?.id_tecnico ? Number(req.body.id_tecnico) : null);
+  const accesoriosRecibidos = clean(req.body?.accesorios_recibidos) || null;
+  const observacionesRecepcion = clean(req.body?.observaciones_recepcion) || null;
   const client = await db.pool.connect();
 
   if (!TIPOS_ATENCION.includes(tipoAtencion)) {
@@ -490,7 +545,7 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
 
     if (!usuarioSucursal?.id_sucursal) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Usuario ADMIN/TECNICO no tiene sucursal asignada" });
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
     }
 
     if (usuarioSucursal.estado_sucursal !== "ACTIVA") {
@@ -675,24 +730,6 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
     const tipoMaquina = tipoResult.rows[0];
     const valorIngreso = Number(tipoMaquina.valor_ingreso || 0);
 
-    if (idTecnico) {
-      const tecnicoCheck = await client.query(
-        `SELECT u.id_usuario
-        FROM usuarios u
-        INNER JOIN roles r ON r.id_rol = u.id_rol
-        WHERE u.id_usuario = $1
-          AND u.id_sucursal = $2
-          AND r.nombre_rol = 'TECNICO'
-        LIMIT 1`,
-        [idTecnico, usuarioSucursal.id_sucursal]
-      );
-
-      if (tecnicoCheck.rows.length === 0) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({ error: "Tecnico no encontrado para la sucursal" });
-      }
-    }
-
     const insertResult = await client.query(
       `INSERT INTO ordenes_servicio (
         id_sucursal,
@@ -700,6 +737,9 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
         id_producto,
         id_tipo_maquina,
         id_tecnico,
+        id_responsable,
+        id_creado_por,
+        fecha_toma,
         id_modelo,
         costo_ingreso_taller,
         valor_ingreso,
@@ -707,27 +747,40 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
         tipo_atencion,
         tipo_orden,
         descripcion_problema,
-        diagnostico,
+        accesorios_recibidos,
+        observaciones_recepcion,
         estado
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $9, $10, $11, 'PENDIENTE')
+      VALUES ($1, $2, $3, $4, NULL, NULL, $5, NULL, $6, $7, $8, $8, $9, $9, $10, $11, $12, 'INGRESADA')
       RETURNING id_orden`,
       [
         usuarioSucursal.id_sucursal,
         clienteId,
         producto.id_producto,
         tipoMaquina.id_tipo_maquina,
-        idTecnico,
+        req.usuario.id_usuario,
         producto.id_modelo,
         usuarioSucursal.costo_ingreso_taller || 0,
         valorIngreso,
         tipoAtencion,
         descripcionProblema,
-        descripcionProblema
+        accesoriosRecibidos,
+        observacionesRecepcion
       ]
     );
 
-    await refreshCotizacion(insertResult.rows[0].id_orden, client);
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion
+      )
+      VALUES ($1, NULL, 'INGRESADA', $2, 'CREAR_ORDEN')`,
+      [insertResult.rows[0].id_orden, req.usuario.id_usuario]
+    );
+
     await client.query("COMMIT");
 
     const orden = await getOrdenDetalle(insertResult.rows[0].id_orden);
@@ -740,6 +793,89 @@ router.post("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
     }
 
     console.error("Error creando orden de servicio:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/:id/tomar", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
+    }
+
+    if (usuarioSucursal.estado_sucursal !== "ACTIVA") {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ error: "La sucursal del usuario esta INACTIVA" });
+    }
+
+    const updateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET id_responsable = $1,
+          id_tecnico = $1,
+          fecha_toma = CURRENT_TIMESTAMP,
+          estado = 'EN_REVISION',
+          version = version + 1
+      WHERE id_orden = $2
+        AND id_sucursal = $3
+        AND estado = 'INGRESADA'
+        AND id_responsable IS NULL
+      RETURNING id_orden`,
+      [req.usuario.id_usuario, idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (updateResult.rows.length === 0) {
+      const existsResult = await client.query(
+        `SELECT id_orden
+        FROM ordenes_servicio
+        WHERE id_orden = $1
+          AND id_sucursal = $2
+        LIMIT 1`,
+        [idOrden, usuarioSucursal.id_sucursal]
+      );
+
+      await client.query("ROLLBACK");
+
+      if (existsResult.rows.length === 0) {
+        return res.status(404).json({ error: "Orden no encontrada" });
+      }
+
+      return res.status(409).json({ error: "La orden ya fue tomada o no esta disponible" });
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion
+      )
+      VALUES ($1, 'INGRESADA', 'EN_REVISION', $2, 'TOMAR_ORDEN')`,
+      [idOrden, req.usuario.id_usuario]
+    );
+
+    await client.query("COMMIT");
+
+    const orden = await getOrdenDetalle(idOrden);
+    return res.json({ orden });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error tomando orden de servicio:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
   } finally {
     client.release();
