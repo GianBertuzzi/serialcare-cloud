@@ -17,8 +17,7 @@ const ALLOWED_EVIDENCE_FILE_TYPES = new Set([
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 ]);
-const initialGarantiaForm = { observacion: "" };
-const initialDecisionForm = { garantia_aprobada_por_admin: "true", observacion_admin: "" };
+const initialDecisionForm = { observacion: "" };
 
 function DetailItem({ label, children }) {
   return <div className="detail-box"><span>{label}</span><strong>{children || "Sin dato"}</strong></div>;
@@ -28,9 +27,15 @@ function isHttpUrl(value) {
   return /^https?:\/\//i.test(value || "");
 }
 
-function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
+function normalizeTipoOrden(value) {
+  const tipo = String(value || "").trim().toUpperCase();
+  return tipo === "GARANTIA" ? "REVISION_GARANTIA" : tipo;
+}
+
+function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onClose, onUpdated }) {
   const { user } = useAuth();
   const isAdmin = user?.rol === "ADMIN";
+  const isTecnico = user?.rol === "TECNICO";
   const isRecepcionista = user?.rol === "RECEPCIONISTA";
   const isReadOnly = readOnly || isRecepcionista;
   const [activeTab, setActiveTab] = useState("resumen");
@@ -45,7 +50,6 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
   const [cotizacionForm, setCotizacionForm] = useState({ mano_obra: "0", estado: "BORRADOR", observacion: "" });
   const [evidenciaForm, setEvidenciaForm] = useState(initialEvidenciaForm);
   const [evidenciaUploadForm, setEvidenciaUploadForm] = useState(initialEvidenciaUploadForm);
-  const [garantiaForm, setGarantiaForm] = useState(initialGarantiaForm);
   const [decisionForm, setDecisionForm] = useState(initialDecisionForm);
 
   const idOrden = orden?.id_orden;
@@ -69,8 +73,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
         observacion: nextDetalle?.cotizacion?.observacion || ""
       });
       setDecisionForm({
-        garantia_aprobada_por_admin: nextDetalle?.orden?.garantia_aprobada_por_admin === false ? "false" : "true",
-        observacion_admin: nextDetalle?.orden?.observacion_admin || nextDetalle?.garantia?.observacion_admin || ""
+        observacion: nextDetalle?.orden?.observacion_admin || nextDetalle?.garantia?.observacion_admin || ""
       });
     } catch (requestError) {
       setError(requestError.response?.data?.error || "No se pudo cargar el detalle de la orden.");
@@ -80,7 +83,7 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
   }
 
   async function loadCatalogoRepuestos() {
-    if (isReadOnly) return;
+    if (isReadOnly || workflowMode) return;
     try {
       const response = await api.get("/repuestos");
       setCatalogoRepuestos(response.data.repuestos || []);
@@ -96,14 +99,24 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
     setRepuestoForm(initialRepuestoForm);
     setEvidenciaForm(initialEvidenciaForm);
     setEvidenciaUploadForm(initialEvidenciaUploadForm);
-    setGarantiaForm(initialGarantiaForm);
     loadDetalle();
     loadCatalogoRepuestos();
   }, [idOrden]);
 
   const totalRepuestos = useMemo(() => (detalle?.repuestos || []).reduce((total, repuesto) => total + Number(repuesto.subtotal ?? Number(repuesto.cantidad || 0) * Number(repuesto.precio_unitario || 0)), 0), [detalle]);
-  const activeGarantia = detalle?.garantia && ["PENDIENTE", "EN_REVISION"].includes(detalle.garantia.estado);
-  const canRequestGarantia = !isReadOnly && !activeGarantia;
+  const tipoOrden = normalizeTipoOrden(detalle?.orden?.tipo_orden || detalle?.orden?.tipo_atencion);
+  const isGarantiaOrder = tipoOrden === "REVISION_GARANTIA";
+  const hasDiagnostico = Boolean(detalle?.orden?.diagnostico?.trim());
+  const hasFinalDecision = (detalle?.orden?.garantia_aprobada_por_admin !== null
+    && detalle?.orden?.garantia_aprobada_por_admin !== undefined)
+    || ["APROBADA", "RECHAZADA"].includes(detalle?.garantia?.estado);
+  const ownsOrder = isAdmin || (isTecnico && Number(detalle?.orden?.id_responsable) === Number(user?.id_usuario));
+  const canEditDiagnostico = workflowMode
+    && !isReadOnly
+    && (isAdmin || isTecnico)
+    && detalle?.orden?.estado === "EN_REVISION"
+    && ownsOrder;
+  const canDecideGarantia = canEditDiagnostico && isGarantiaOrder && hasDiagnostico && !hasFinalDecision;
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -150,14 +163,14 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
     setError("");
     setSuccess("");
     try {
-      await api.put(`/ordenes/${idOrden}/informe-tecnico`, {
+      await api.put(`/ordenes/${idOrden}/diagnostico`, {
         diagnostico: informeForm.diagnostico.trim(),
         informe_tecnico: informeForm.informe_tecnico.trim(),
         mano_obra: Number(informeForm.mano_obra || 0)
       });
-      await afterMutation("Informe tecnico guardado correctamente.");
+      await afterMutation("Diagnostico guardado correctamente.");
     } catch (requestError) {
-      setError(requestError.response?.data?.error || "No se pudo guardar el informe tecnico.");
+      setError(requestError.response?.data?.error || "No se pudo guardar el diagnostico.");
     } finally {
       setSaving("");
     }
@@ -239,40 +252,22 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
       setSaving("");
     }
   }
-  async function handleSolicitarGarantia(event) {
-    event.preventDefault();
-    setSaving("garantia");
-    setError("");
-    setSuccess("");
-    try {
-      await api.post(`/ordenes/${idOrden}/solicitar-garantia`, { motivo_solicitud: garantiaForm.observacion.trim() });
-      setGarantiaForm(initialGarantiaForm);
-      await afterMutation("Solicitud de garantia creada correctamente.");
-    } catch (requestError) {
-      setError(requestError.response?.data?.error || "No se pudo solicitar garantia.");
-    } finally {
-      setSaving("");
-    }
-  }
-
-  async function handleDecisionGarantia(event) {
-    event.preventDefault();
+  async function handleDecisionGarantia(decision) {
     setSaving("decision");
     setError("");
     setSuccess("");
     try {
       await api.put(`/ordenes/${idOrden}/decision-garantia`, {
-        garantia_aprobada_por_admin: decisionForm.garantia_aprobada_por_admin === "true",
-        observacion_admin: decisionForm.observacion_admin.trim()
+        decision,
+        observacion: decisionForm.observacion.trim()
       });
-      await afterMutation("Decision de garantia guardada correctamente.");
+      await afterMutation(`Garantia ${decision.toLowerCase()} correctamente.`);
     } catch (requestError) {
       setError(requestError.response?.data?.error || "No se pudo guardar la decision de garantia.");
     } finally {
       setSaving("");
     }
   }
-
   if (!orden) return null;
 
   const tabs = isRecepcionista
@@ -280,16 +275,22 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
         ["resumen", "Resumen"],
         ["producto", "Cliente / Maquina"]
       ]
-    : [
-        ["resumen", "Resumen"],
-        ["producto", "Cliente / Producto"],
-        ["diagnostico", "Diagnostico"],
-        ["repuestos", "Repuestos usados"],
-        ["cotizacion", "Cotizacion"],
-        ["garantia", "Garantia"],
-        ["evidencias", "Evidencias"]
-      ];
-
+    : workflowMode
+      ? [
+          ["resumen", "Resumen"],
+          ["producto", "Cliente / Maquina"],
+          ["diagnostico", "Diagnostico"],
+          ...(isGarantiaOrder ? [["garantia", "Garantia"]] : [])
+        ]
+      : [
+          ["resumen", "Resumen"],
+          ["producto", "Cliente / Producto"],
+          ["diagnostico", "Diagnostico"],
+          ["repuestos", "Repuestos usados"],
+          ["cotizacion", "Cotizacion"],
+          ["garantia", "Garantia"],
+          ["evidencias", "Evidencias"]
+        ];
   return (
     <>
       <div className="modal fade show d-block order-detail-modal" tabIndex="-1" role="dialog" aria-modal="true">
@@ -337,14 +338,18 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                 {!isRecepcionista && activeTab === "diagnostico" ? <div className="detail-card">
                   <h3 className="h6">Diagnostico e informe tecnico</h3>
                   <p><strong>Problema reportado:</strong> {detalle.orden.descripcion_problema || "Sin descripcion"}</p>
-                  {!isReadOnly ? <form className="row g-3" onSubmit={handleSaveInforme}>
-                    <div className="col-md-6"><label className="form-label">Diagnostico</label><textarea className="form-control" value={informeForm.diagnostico} onChange={(event) => setInformeForm((current) => ({ ...current, diagnostico: event.target.value }))} /></div>
-                    <div className="col-md-6"><label className="form-label">Informe tecnico / reparacion</label><textarea className="form-control" value={informeForm.informe_tecnico} onChange={(event) => setInformeForm((current) => ({ ...current, informe_tecnico: event.target.value }))} /></div>
-                    <div className="col-md-3"><label className="form-label">Mano de obra</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div>
-                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "informe"}>{saving === "informe" ? "Guardando..." : "Guardar informe"}</button></div>
-                  </form> : <p>{detalle.orden.informe_tecnico || detalle.orden.diagnostico || "Sin informe registrado."}</p>}
+                  {canEditDiagnostico ? <form className="row g-3" onSubmit={handleSaveInforme}>
+                    <div className="col-md-6"><label className="form-label">Diagnostico</label><textarea className="form-control" value={informeForm.diagnostico} onChange={(event) => setInformeForm((current) => ({ ...current, diagnostico: event.target.value }))} required /></div>
+                    <div className="col-md-6"><label className="form-label">Informe / observaciones tecnicas</label><textarea className="form-control" value={informeForm.informe_tecnico} onChange={(event) => setInformeForm((current) => ({ ...current, informe_tecnico: event.target.value }))} /></div>
+                    <div className="col-md-3"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div>
+                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "informe"}>{saving === "informe" ? "Guardando..." : "Guardar diagnostico"}</button></div>
+                  </form> : <div className="detail-grid">
+                    <DetailItem label="Diagnostico">{detalle.orden.diagnostico}</DetailItem>
+                    <DetailItem label="Informe tecnico">{detalle.orden.informe_tecnico}</DetailItem>
+                    <DetailItem label="Mano de obra estimada">{formatCurrency(detalle.orden.mano_obra)}</DetailItem>
+                  </div>}
+                  {workflowMode && !canEditDiagnostico && !hasDiagnostico ? <p className="alert alert-info mt-3 mb-0">El diagnostico solo puede registrarse mientras la orden propia esta en revision.</p> : null}
                 </div> : null}
-
                 {!isRecepcionista && activeTab === "repuestos" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 className="h6 mb-0">Repuestos usados</h3><strong>Total repuestos: {formatCurrency(totalRepuestos)}</strong></div>
                   {detalle.repuestos.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Repuesto</th><th>Cantidad</th><th>Precio unitario</th><th>Total</th><th>Cubre garantia</th><th>Observacion</th></tr></thead><tbody>{detalle.repuestos.map((repuesto) => <tr key={repuesto.id_repuesto_usado}><td>{repuesto.nombre_repuesto}</td><td>{repuesto.cantidad}</td><td>{formatCurrency(repuesto.precio_unitario)}</td><td>{formatCurrency(repuesto.subtotal)}</td><td>{repuesto.cubierto_garantia ? "Si" : "No"}</td><td>{repuesto.observacion || "Sin observacion"}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay repuestos registrados.</p>}
@@ -365,11 +370,23 @@ function OrdenDetalleModal({ orden, readOnly = false, onClose, onUpdated }) {
                 </div> : null}
 
                 {!isRecepcionista && activeTab === "garantia" ? <div className="detail-card">
-                  {detalle.garantia ? <div className="detail-grid mb-3"><DetailItem label="Estado"><StatusBadge value={detalle.garantia.estado} /></DetailItem><DetailItem label="Solicitud">{formatDate(detalle.garantia.fecha_solicitud)}</DetailItem><DetailItem label="Revision admin">{formatDate(detalle.garantia.fecha_revision)}</DetailItem><DetailItem label="Observacion tecnica">{detalle.garantia.observacion}</DetailItem><DetailItem label="Decision admin">{detalle.garantia.observacion_admin || detalle.orden.observacion_admin || "Sin decision"}</DetailItem></div> : <p className="empty-state">No hay solicitud de garantia para esta orden.</p>}
-                  {!isReadOnly && isAdmin ? <form className="row g-3" onSubmit={handleDecisionGarantia}><div className="col-md-4"><label className="form-label">Decision final</label><select className="form-select" value={decisionForm.garantia_aprobada_por_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, garantia_aprobada_por_admin: event.target.value }))}><option value="true">Aceptar como garantia</option><option value="false">Marcar como reparacion comun</option></select></div><div className="col-md-8"><label className="form-label">Observacion admin</label><input className="form-control" value={decisionForm.observacion_admin} onChange={(event) => setDecisionForm((current) => ({ ...current, observacion_admin: event.target.value }))} /></div><div className="col-12"><button className="btn btn-primary" disabled={saving === "decision"}>{saving === "decision" ? "Guardando..." : "Guardar decision"}</button></div></form> : null}
-                  {canRequestGarantia && !isAdmin ? <form className="mt-3" onSubmit={handleSolicitarGarantia}><label className="form-label">Motivo u observacion</label><textarea className="form-control" value={garantiaForm.observacion} onChange={(event) => setGarantiaForm({ observacion: event.target.value })} required /><button className="btn btn-primary mt-3" disabled={saving === "garantia"}>{saving === "garantia" ? "Solicitando..." : "Solicitar garantia"}</button></form> : null}
+                  <h3 className="h6">Decision final de garantia</h3>
+                  <div className="detail-grid mb-3">
+                    <DetailItem label="Elegibilidad inicial"><StatusBadge value={detalle.producto?.estado_garantia || "SIN INFORMACION"} /></DetailItem>
+                    <DetailItem label="Decision final"><StatusBadge value={detalle.garantia?.estado || (hasFinalDecision ? (detalle.orden.garantia_aprobada_por_admin ? "APROBADA" : "RECHAZADA") : "PENDIENTE")} /></DetailItem>
+                    <DetailItem label="Fecha de decision">{formatDate(detalle.garantia?.fecha_revision)}</DetailItem>
+                    <DetailItem label="Observacion">{detalle.garantia?.observacion_admin || detalle.orden.observacion_admin}</DetailItem>
+                  </div>
+                  {!hasDiagnostico ? <p className="alert alert-warning">Guarda el diagnostico antes de decidir la cobertura final.</p> : null}
+                  {canDecideGarantia ? <div className="row g-3">
+                    <div className="col-12"><label className="form-label">Observacion de la decision</label><textarea className="form-control" value={decisionForm.observacion} onChange={(event) => setDecisionForm({ observacion: event.target.value })} /></div>
+                    <div className="col-12 d-flex flex-wrap gap-2">
+                      <button className="btn btn-success" type="button" disabled={saving === "decision"} onClick={() => handleDecisionGarantia("APROBADA")}>Aprobar garantia</button>
+                      <button className="btn btn-outline-danger" type="button" disabled={saving === "decision"} onClick={() => handleDecisionGarantia("RECHAZADA")}>Rechazar garantia</button>
+                    </div>
+                  </div> : null}
+                  {hasFinalDecision ? <p className="alert alert-info mt-3 mb-0">La decision de garantia es final y no puede modificarse desde este flujo.</p> : null}
                 </div> : null}
-
                 {!isRecepcionista && activeTab === "evidencias" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
                     <h3 className="h6 mb-0">Evidencias</h3>

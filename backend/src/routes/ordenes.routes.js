@@ -929,95 +929,284 @@ router.put("/:id/estado", verificarRol("ADMIN", "TECNICO"), async (req, res) => 
   }
 });
 
-router.put("/:id/informe-tecnico", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const camposPermitidos = new Set(["diagnostico", "informe_tecnico", "observaciones_tecnicas", "mano_obra"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
   const diagnostico = clean(req.body?.diagnostico);
-  const informeTecnico = clean(req.body?.informe_tecnico);
+  const informeTecnico = clean(req.body?.informe_tecnico || req.body?.observaciones_tecnicas);
   const manoObra = parseMoney(req.body?.mano_obra, 0);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite modificar diagnostico, informe_tecnico, observaciones_tecnicas y mano_obra" });
+  }
+
+  if (!diagnostico) {
+    return res.status(400).json({ error: "diagnostico es obligatorio" });
+  }
 
   if (manoObra === null) {
     return res.status(400).json({ error: "mano_obra debe ser numero mayor o igual a 0" });
   }
 
-  try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+  const client = await db.pool.connect();
 
-    if (access.error) {
-      return res.status(access.status).json({ error: access.error });
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
     }
 
-    await db.query(
-      `UPDATE ordenes_servicio
-      SET diagnostico = COALESCE(NULLIF($1, ''), diagnostico),
-          informe_tecnico = COALESCE(NULLIF($2, ''), informe_tecnico),
-          mano_obra = $3
-      WHERE id_orden = $4
-        AND id_sucursal = $5`,
-      [diagnostico, informeTecnico, manoObra, access.orden.id_orden, access.orden.id_sucursal]
+    const ordenResult = await client.query(
+      `SELECT id_orden, estado, id_responsable
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
     );
 
-    await refreshCotizacion(access.orden.id_orden);
-    const orden = await getOrdenDetalle(access.orden.id_orden);
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    const ordenActual = ordenResult.rows[0];
+
+    if (ordenActual.estado !== "EN_REVISION") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden debe estar EN_REVISION para registrar diagnostico" });
+    }
+
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(ordenActual.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
+    await client.query(
+      `UPDATE ordenes_servicio
+      SET diagnostico = $1,
+          informe_tecnico = $2,
+          mano_obra = $3,
+          version = version + 1
+      WHERE id_orden = $4
+        AND id_sucursal = $5`,
+      [diagnostico, informeTecnico, manoObra, idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion,
+        observacion
+      )
+      VALUES ($1, 'EN_REVISION', 'EN_REVISION', $2, 'REGISTRAR_DIAGNOSTICO', $3)`,
+      [idOrden, req.usuario.id_usuario, informeTecnico || null]
+    );
+
+    await client.query("COMMIT");
+    const orden = await getOrdenDetalle(idOrden);
     return res.json({ orden });
   } catch (error) {
-    console.error("Error guardando informe tecnico:", error);
+    await client.query("ROLLBACK");
+    console.error("Error registrando diagnostico tecnico:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 
-router.put("/:id/decision-garantia", verificarRol("ADMIN"), async (req, res) => {
-  const garantiaAprobada = req.body?.garantia_aprobada_por_admin === true || req.body?.garantia_aprobada_por_admin === "true";
-  const observacionAdmin = clean(req.body?.observacion_admin || req.body?.observacion);
+router.put("/:id/decision-garantia", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const camposPermitidos = new Set(["decision", "observacion"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
+  const decision = clean(req.body?.decision).toUpperCase();
+  const observacion = clean(req.body?.observacion);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite enviar decision y observacion" });
+  }
+
+  if (!["APROBADA", "RECHAZADA"].includes(decision)) {
+    return res.status(400).json({ error: "decision debe ser APROBADA o RECHAZADA" });
+  }
+
+  const client = await db.pool.connect();
 
   try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
 
-    if (access.error) {
-      return res.status(access.status).json({ error: access.error });
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
     }
 
-    await db.query(
-      `UPDATE ordenes_servicio
-      SET garantia_aprobada_por_admin = $1,
-          observacion_admin = $2
-      WHERE id_orden = $3
-        AND id_sucursal = $4`,
-      [garantiaAprobada, observacionAdmin, access.orden.id_orden, access.orden.id_sucursal]
+    const ordenResult = await client.query(
+      `SELECT
+        id_orden,
+        id_producto,
+        id_sucursal,
+        id_responsable,
+        tipo_orden,
+        tipo_atencion,
+        diagnostico,
+        garantia_aprobada_por_admin,
+        estado
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
     );
 
-    const garantiaExistente = await getGarantiaPorOrden(access.orden.id_orden);
-    const estadoGarantia = garantiaAprobada ? "APROBADA" : "RECHAZADA";
-
-    if (garantiaExistente) {
-      await db.query(
-        `UPDATE garantias
-        SET estado = $1,
-            observacion_admin = $2,
-            observacion_marca = $2,
-            fecha_revision = CURRENT_TIMESTAMP
-        WHERE id_garantia = $3`,
-        [estadoGarantia, observacionAdmin, garantiaExistente.id_garantia]
-      );
-    } else {
-      await db.query(
-        `INSERT INTO garantias (id_orden, id_producto, id_sucursal, id_tecnico, estado, observacion, observacion_admin, observacion_marca, fecha_revision)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $7, CURRENT_TIMESTAMP)`,
-        [
-          access.orden.id_orden,
-          access.orden.id_producto,
-          access.orden.id_sucursal,
-          access.orden.id_tecnico,
-          estadoGarantia,
-          "Decision interna creada por admin de sucursal",
-          observacionAdmin
-        ]
-      );
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
     }
 
-    const orden = await getOrdenDetalle(access.orden.id_orden);
-    return res.json({ orden });
+    const ordenActual = ordenResult.rows[0];
+
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(ordenActual.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
+    if (ordenActual.estado !== "EN_REVISION") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden debe estar EN_REVISION para decidir garantia" });
+    }
+
+    const tipoOrden = normalizeTipoAtencion(ordenActual.tipo_orden || ordenActual.tipo_atencion);
+
+    if (tipoOrden !== "REVISION_GARANTIA") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "La decision de garantia solo aplica a REVISION_GARANTIA" });
+    }
+
+    if (!clean(ordenActual.diagnostico)) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Debe registrar el diagnostico antes de decidir la garantia" });
+    }
+
+    const garantiasResult = await client.query(
+      `SELECT id_garantia, estado
+      FROM garantias
+      WHERE id_orden = $1
+      ORDER BY fecha_solicitud DESC, id_garantia DESC
+      FOR UPDATE`,
+      [idOrden]
+    );
+
+    const decisionPrevia = garantiasResult.rows.some((garantia) =>
+      ["APROBADA", "RECHAZADA"].includes(garantia.estado)
+    );
+
+    if (ordenActual.garantia_aprobada_por_admin !== null || decisionPrevia) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La garantia ya tiene una decision final" });
+    }
+
+    const garantiaAprobada = decision === "APROBADA";
+    const estadoResultante = garantiaAprobada ? "EN_REPARACION" : "EN_REVISION";
+    const accion = garantiaAprobada ? "GARANTIA_APROBADA" : "GARANTIA_RECHAZADA";
+
+    await client.query(
+      `UPDATE ordenes_servicio
+      SET garantia_aprobada_por_admin = $1,
+          observacion_admin = $2,
+          estado = $3,
+          version = version + 1
+      WHERE id_orden = $4
+        AND id_sucursal = $5`,
+      [garantiaAprobada, observacion || null, estadoResultante, idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    let idGarantia;
+
+    if (garantiasResult.rows.length > 0) {
+      const garantiaUpdate = await client.query(
+        `UPDATE garantias
+        SET estado = $1,
+            id_tecnico = $2,
+            observacion_admin = $3,
+            fecha_revision = CURRENT_TIMESTAMP
+        WHERE id_orden = $4
+          AND estado NOT IN ('APROBADA', 'RECHAZADA')
+        RETURNING id_garantia`,
+        [decision, req.usuario.id_usuario, observacion || null, idOrden]
+      );
+      idGarantia = garantiaUpdate.rows[0]?.id_garantia;
+    } else {
+      const garantiaInsert = await client.query(
+        `INSERT INTO garantias (
+          id_orden,
+          id_producto,
+          id_sucursal,
+          id_tecnico,
+          estado,
+          observacion_admin,
+          fecha_revision
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+        RETURNING id_garantia`,
+        [
+          idOrden,
+          ordenActual.id_producto,
+          ordenActual.id_sucursal,
+          req.usuario.id_usuario,
+          decision,
+          observacion || null
+        ]
+      );
+      idGarantia = garantiaInsert.rows[0].id_garantia;
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden,
+        estado_anterior,
+        estado_nuevo,
+        id_usuario,
+        accion,
+        observacion
+      )
+      VALUES ($1, 'EN_REVISION', $2, $3, $4, $5)`,
+      [idOrden, estadoResultante, req.usuario.id_usuario, accion, observacion || null]
+    );
+
+    await client.query("COMMIT");
+    const [orden, garantia] = await Promise.all([
+      getOrdenDetalle(idOrden),
+      getGarantiaDetalle(idGarantia)
+    ]);
+    return res.json({ orden, garantia });
   } catch (error) {
-    console.error("Error guardando decision de garantia:", error);
+    await client.query("ROLLBACK");
+    console.error("Error registrando decision final de garantia:", error);
     return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 router.get("/:id/repuestos", verificarRol("ADMIN", "TECNICO"), async (req, res) => {

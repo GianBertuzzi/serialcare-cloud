@@ -40,7 +40,7 @@ function AdminGarantias() {
 
   return (
     <AppLayout title="Garantias internas" eyebrow="ADMIN">
-      {selected ? <OrdenDetalleModal orden={selected} onClose={() => setSelected(null)} onUpdated={loadGarantias} /> : null}
+      {selected ? <OrdenDetalleModal orden={selected} workflowMode onClose={() => setSelected(null)} onUpdated={loadGarantias} /> : null}
       <DataTable title="Garantias internas" eyebrow="Decision operativa" rows={garantias} columns={columns} getRowKey={(g) => g.id_garantia} searchPlaceholder="Buscar por orden, serie, cliente, diagnostico o estado" emptyMessage="No hay garantias registradas." loading={loading} error={error} initialSortKey="fecha" />
     </AppLayout>
   );

@@ -88,7 +88,7 @@ function OrdenesIngreso() {
     <AppLayout title="Ordenes de servicio" eyebrow={user?.rol || "OPERACION"}>
       {success ? <p className="alert alert-success">{success}</p> : null}
       {formOpen ? <NewOrderForm onCancel={() => setFormOpen(false)} onCreated={handleCreated} /> : null}
-      {selected ? <OrdenDetalleModal orden={selected} readOnly onClose={() => setSelected(null)} /> : null}
+      {selected ? <OrdenDetalleModal orden={selected} readOnly={!isAdmin} workflowMode={isAdmin} onClose={() => setSelected(null)} onUpdated={loadOrdenes} /> : null}
       <DataTable
         title="Ordenes de servicio"
         eyebrow="Recepcion y seguimiento"

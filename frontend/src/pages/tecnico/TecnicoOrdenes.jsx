@@ -81,7 +81,7 @@ function TecnicoOrdenes() {
   return (
     <AppLayout title="Ordenes de servicio" eyebrow="TECNICO">
       {success ? <p className="alert alert-success">{success}</p> : null}
-      {selected ? <OrdenDetalleModal orden={selected} readOnly onClose={() => setSelected(null)} /> : null}
+      {selected ? <OrdenDetalleModal orden={selected} workflowMode onClose={() => setSelected(null)} onUpdated={loadOrdenes} /> : null}
 
       <ul className="nav nav-tabs mb-3" aria-label="Vistas de ordenes">
         <li className="nav-item">
