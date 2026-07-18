@@ -1,9 +1,11 @@
+const crypto = require("crypto");
 const express = require("express");
 const multer = require("multer");
 const db = require("../db");
 const verificarToken = require("../middlewares/verificarToken");
 const verificarRol = require("../middlewares/verificarRol");
-const { uploadEvidenceFile } = require("../services/azureBlob.service");
+const { uploadEvidenceFile, uploadPrivateBuffer, downloadPrivateBuffer, deletePrivateBlob } = require("../services/azureBlob.service");
+const { generateQuotationPdf } = require("../services/quotationPdf.service");
 
 const router = express.Router();
 
@@ -63,6 +65,7 @@ const ORDEN_SELECT = `SELECT
   c.rut AS cliente_rut,
   c.email AS cliente_email,
   c.telefono AS cliente_telefono,
+  c.direccion AS cliente_direccion,
   c.id_usuario AS cliente_id_usuario,
   o.id_producto,
   p.numero_serie,
@@ -364,6 +367,69 @@ async function getCotizacionesResumen(idOrden) {
   return result.rows;
 }
 
+async function getQuotationDocumentData(client, idOrden, version, idSucursal, lockRows = false) {
+  const lockClause = lockRows ? "FOR UPDATE OF o" : "";
+  const orderResult = await client.query(
+    `SELECT
+      o.id_orden, o.id_sucursal, o.estado, o.tipo_orden, o.tipo_atencion,
+      o.descripcion_problema, o.diagnostico, o.observaciones_recepcion,
+      o.garantia_aprobada_por_admin,
+      c.nombre AS cliente_nombre, c.rut AS cliente_rut,
+      c.telefono AS cliente_telefono, c.email AS cliente_email,
+      c.direccion AS cliente_direccion,
+      p.numero_serie, p.marca, p.modelo,
+      COALESCE(tm.nombre, p.tipo_maquina) AS tipo_maquina,
+      COALESCE(responsable.nombre, creador.nombre) AS responsable_nombre
+    FROM ordenes_servicio o
+    INNER JOIN clientes c ON c.id_cliente = o.id_cliente
+    INNER JOIN productos p ON p.id_producto = o.id_producto
+    LEFT JOIN tipos_maquina tm ON tm.id_tipo_maquina = o.id_tipo_maquina
+    LEFT JOIN usuarios responsable ON responsable.id_usuario = o.id_responsable
+    LEFT JOIN usuarios creador ON creador.id_usuario = o.id_creado_por
+    WHERE o.id_orden = $1
+      AND o.id_sucursal = $2
+    ${lockClause}`,
+    [idOrden, idSucursal]
+  );
+
+  if (orderResult.rows.length === 0) return null;
+
+  const quoteLockClause = lockRows ? "FOR UPDATE" : "";
+  const quotationResult = await client.query(
+    `SELECT
+      c.*,
+      (SELECT MAX(version) FROM cotizaciones WHERE id_orden = $1) AS ultima_version
+    FROM cotizaciones c
+    WHERE c.id_orden = $1
+      AND c.version = $2
+    ${quoteLockClause}`,
+    [idOrden, version]
+  );
+
+  if (quotationResult.rows.length === 0) {
+    return { orden: orderResult.rows[0], cotizacion: null, repuestos: [] };
+  }
+
+  const partsResult = await client.query(
+    `SELECT
+      COALESCE(r.codigo, '-') AS codigo,
+      ru.nombre_repuesto AS nombre,
+      ru.cantidad,
+      ru.precio_unitario AS valor_unitario,
+      ru.subtotal
+    FROM repuestos_usados ru
+    LEFT JOIN repuestos r ON r.id_repuesto = ru.id_repuesto
+    WHERE ru.id_orden = $1
+    ORDER BY ru.id_detalle`,
+    [idOrden]
+  );
+
+  return {
+    orden: orderResult.rows[0],
+    cotizacion: quotationResult.rows[0],
+    repuestos: partsResult.rows
+  };
+}
 async function getBorradorTecnicoFinalizado(idOrden) {
   const result = await db.query(
     `SELECT EXISTS (
@@ -453,7 +519,8 @@ async function buildOrdenDetalle(orden) {
       nombre: orden.cliente_nombre,
       rut: orden.cliente_rut,
       email: orden.cliente_email,
-      telefono: orden.cliente_telefono
+      telefono: orden.cliente_telefono,
+      direccion: orden.cliente_direccion
     },
     tecnico: orden.id_tecnico
       ? {
@@ -1805,6 +1872,249 @@ router.put("/:id/cotizaciones/:version/descuento", verificarRol("ADMIN"), async 
   }
 });
 
+router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const version = Number(req.params.version);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(version) || version <= 0) {
+    return res.status(400).json({ error: "id de orden y version deben ser validos" });
+  }
+
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
+  }
+
+  const client = await db.pool.connect();
+  let uploadedBlobName = null;
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
+    }
+
+    const documentData = await getQuotationDocumentData(
+      client,
+      idOrden,
+      version,
+      usuarioSucursal.id_sucursal,
+      true
+    );
+
+    if (!documentData) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    if (!documentData.cotizacion) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Cotizacion no encontrada para la version indicada" });
+    }
+
+    const { orden, cotizacion, repuestos } = documentData;
+
+    if (Number(cotizacion.ultima_version) !== version) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Solo se puede generar el PDF de la version mas reciente" });
+    }
+
+    if (cotizacion.estado !== "BORRADOR" || cotizacion.cerrada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La cotizacion no esta disponible para generar PDF" });
+    }
+
+    if (cotizacion.pdf_estado !== "NO_GENERADO") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "El PDF de esta version ya fue generado o esta en proceso" });
+    }
+
+    const tipoOrden = normalizeTipoAtencion(orden.tipo_orden || orden.tipo_atencion);
+    const garantiaRechazada = tipoOrden === "REVISION_GARANTIA" && orden.garantia_aprobada_por_admin === false;
+
+    if (tipoOrden !== "REPARACION" && !garantiaRechazada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Este tipo de orden no utiliza una cotizacion normal" });
+    }
+
+    const generatedAt = new Date();
+    const pdfBuffer = await generateQuotationPdf({
+      fecha_generacion: generatedAt,
+      orden: {
+        id_orden: orden.id_orden,
+        descripcion_problema: orden.descripcion_problema,
+        diagnostico: orden.diagnostico,
+        observaciones_recepcion: orden.observaciones_recepcion
+      },
+      cliente: {
+        nombre: orden.cliente_nombre,
+        rut: orden.cliente_rut,
+        telefono: orden.cliente_telefono,
+        email: orden.cliente_email,
+        direccion: orden.cliente_direccion
+      },
+      maquina: {
+        tipo: orden.tipo_maquina,
+        marca: orden.marca,
+        modelo: orden.modelo,
+        numero_serie: orden.numero_serie
+      },
+      cotizacion,
+      repuestos,
+      responsable: orden.responsable_nombre
+    });
+    const pdfHash = crypto.createHash("sha256").update(pdfBuffer).digest("hex");
+    const pdfFileName = `cotizacion-v${version}.pdf`;
+    const blobName = `cotizaciones/orden-${idOrden}/${pdfFileName}`;
+    const uploaded = await uploadPrivateBuffer(blobName, pdfBuffer, "application/pdf", {
+      ordenId: String(idOrden),
+      version: String(version),
+      sha256: pdfHash
+    });
+    uploadedBlobName = uploaded.blobName;
+
+    const updateResult = await client.query(
+      `UPDATE cotizaciones
+      SET pdf_estado = 'GENERADO',
+          pdf_nombre_archivo = $1,
+          pdf_blob_name = $2,
+          pdf_url = $3,
+          pdf_hash = $4,
+          pdf_mime_type = 'application/pdf',
+          pdf_size_bytes = $5,
+          fecha_pdf = $6,
+          cerrada = TRUE,
+          fecha_cierre = $6,
+          id_cerrada_por = $7,
+          fecha_actualizacion = CURRENT_TIMESTAMP
+      WHERE id_orden = $8
+        AND version = $9
+        AND estado = 'BORRADOR'
+        AND cerrada = FALSE
+        AND pdf_estado = 'NO_GENERADO'
+      RETURNING id_cotizacion, id_orden, version, estado, subtotal_original,
+        valor_descuento, total_final, cerrada, fecha_cierre, id_cerrada_por,
+        pdf_estado, pdf_nombre_archivo, pdf_blob_name, pdf_url, pdf_hash,
+        pdf_mime_type, pdf_size_bytes, fecha_pdf`,
+      [pdfFileName, uploaded.blobName, uploaded.url, pdfHash, pdfBuffer.length, generatedAt, req.usuario.id_usuario, idOrden, version]
+    );
+
+    if (updateResult.rows.length === 0) {
+      throw Object.assign(new Error("La cotizacion cambio mientras se generaba el PDF"), { status: 409 });
+    }
+
+    await client.query(
+      `UPDATE ordenes_servicio
+      SET version = version + 1
+      WHERE id_orden = $1`,
+      [idOrden]
+    );
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, $2, $2, $3, 'GENERAR_PDF_COTIZACION', $4)`,
+      [idOrden, orden.estado, req.usuario.id_usuario, `Version ${version}; blob ${uploaded.blobName}; sha256 ${pdfHash}`]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ cotizacion: updateResult.rows[0] });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch (rollbackError) {
+      console.error("Error revirtiendo generacion de PDF:", rollbackError.message);
+    }
+
+    if (uploadedBlobName) {
+      try {
+        await deletePrivateBlob(uploadedBlobName);
+      } catch (compensationError) {
+        console.error("No se pudo eliminar el blob tras rollback:", compensationError.message);
+      }
+    }
+
+    if (error.code === "AZURE_STORAGE_NOT_CONFIGURED") {
+      return res.status(503).json({ error: "Azure Blob Storage no esta configurado; la cotizacion permanece abierta" });
+    }
+
+    if (error.status === 409) {
+      return res.status(409).json({ error: error.message });
+    }
+
+    console.error("Error generando PDF de cotizacion:", error.message);
+    return res.status(500).json({ error: "No se pudo generar y almacenar el PDF de cotizacion" });
+  } finally {
+    client.release();
+  }
+});
+
+router.get("/:id/cotizaciones/:version/pdf", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const version = Number(req.params.version);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(version) || version <= 0) {
+    return res.status(400).json({ error: "id de orden y version deben ser validos" });
+  }
+
+  try {
+    const access = await getOrdenParaUsuario(idOrden, req.usuario);
+
+    if (access.error) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(access.orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
+    const result = await db.query(
+      `SELECT cerrada, pdf_estado, pdf_nombre_archivo, pdf_blob_name, pdf_mime_type
+      FROM cotizaciones
+      WHERE id_orden = $1
+        AND version = $2`,
+      [idOrden, version]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Cotizacion no encontrada para la version indicada" });
+    }
+
+    const cotizacion = result.rows[0];
+
+    if (!cotizacion.cerrada || cotizacion.pdf_estado !== "GENERADO" || !cotizacion.pdf_blob_name) {
+      return res.status(409).json({ error: "El PDF de esta cotizacion aun no esta disponible" });
+    }
+
+    const pdfBuffer = await downloadPrivateBuffer(cotizacion.pdf_blob_name);
+    const disposition = clean(req.query?.inline).toLowerCase() === "true" ? "inline" : "attachment";
+    const fileName = (cotizacion.pdf_nombre_archivo || `cotizacion-v${version}.pdf`).replace(/[^a-zA-Z0-9._-]/g, "-");
+    res.set({
+      "Content-Type": cotizacion.pdf_mime_type || "application/pdf",
+      "Content-Length": String(pdfBuffer.length),
+      "Content-Disposition": `${disposition}; filename="${fileName}"`,
+      "Cache-Control": "private, no-store"
+    });
+    return res.send(pdfBuffer);
+  } catch (error) {
+    if (error.code === "AZURE_STORAGE_NOT_CONFIGURED") {
+      return res.status(503).json({ error: "Azure Blob Storage no esta configurado" });
+    }
+
+    if (error.statusCode === 404 || error.code === "BlobNotFound") {
+      return res.status(404).json({ error: "El archivo PDF no existe en Azure Blob Storage" });
+    }
+
+    console.error("Error descargando PDF de cotizacion:", error.message);
+    return res.status(500).json({ error: "No se pudo descargar el PDF de cotizacion" });
+  }
+});
 router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
   const idOrden = Number(req.params.id);
 

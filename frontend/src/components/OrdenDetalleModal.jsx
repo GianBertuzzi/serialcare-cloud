@@ -150,6 +150,10 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     && cotizacionActual?.estado === "BORRADOR"
     && cotizacionActual?.cerrada === false
     && cotizacionActual?.pdf_estado === "NO_GENERADO";
+  const canGeneratePdf = canEditDiscount && requiereCotizacion && borradorFinalizado;
+  const canAccessPdf = cotizacionActual?.cerrada === true
+    && cotizacionActual?.pdf_estado === "GENERADO"
+    && Boolean(cotizacionActual?.pdf_blob_name);
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -262,6 +266,53 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       await afterMutation(tipoDescuento ? "Descuento actualizado correctamente." : "Descuento retirado correctamente.");
     } catch (requestError) {
       setError(requestError.response?.data?.error || "No se pudo actualizar el descuento.");
+    } finally {
+      setSaving("");
+    }
+  }
+  async function handleGeneratePdf() {
+    if (!window.confirm("La version quedara cerrada e inmutable. ¿Deseas generar el PDF?")) return;
+
+    setSaving("generar-pdf");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/cotizaciones/${cotizacionActual.version}/generar-pdf`);
+      await afterMutation("PDF generado y cotizacion cerrada correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo generar el PDF de cotizacion.");
+    } finally {
+      setSaving("");
+    }
+  }
+
+  async function handlePdf(openInline) {
+    const previewWindow = openInline ? window.open("", "_blank") : null;
+    setSaving(openInline ? "ver-pdf" : "descargar-pdf");
+    setError("");
+    try {
+      const response = await api.get(`/ordenes/${idOrden}/cotizaciones/${cotizacionActual.version}/pdf`, {
+        params: openInline ? { inline: true } : undefined,
+        responseType: "blob"
+      });
+      const objectUrl = URL.createObjectURL(response.data);
+
+      if (openInline) {
+        if (previewWindow) previewWindow.location.href = objectUrl;
+        else window.open(objectUrl, "_blank");
+        window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+      } else {
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = cotizacionActual.pdf_nombre_archivo || `cotizacion-v${cotizacionActual.version}.pdf`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+      }
+    } catch (requestError) {
+      previewWindow?.close();
+      setError(requestError.response?.data?.error || "No se pudo obtener el PDF de cotizacion.");
     } finally {
       setSaving("");
     }
@@ -467,7 +518,16 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                     <div className="col-md-3"><label className="form-label">Valor</label><input className="form-control" type="number" min="0" max={discountForm.tipo_descuento === "PORCENTAJE" ? "100" : undefined} step="0.01" disabled={!discountForm.tipo_descuento} value={discountForm.valor_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, valor_descuento: event.target.value }))} /></div>
                     <div className="col-md-5"><label className="form-label">Motivo</label><input className="form-control" disabled={!discountForm.tipo_descuento} required={Boolean(discountForm.tipo_descuento)} value={discountForm.motivo_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, motivo_descuento: event.target.value }))} /></div>
                     <div className="col-12"><button className="btn btn-outline-primary" disabled={saving === "descuento"}>{saving === "descuento" ? "Guardando..." : "Guardar descuento"}</button></div>
-                  </form> : null}                  {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
+                  </form> : null}
+                  {cotizacionActual ? <div className="border rounded-2 p-3 mb-3">
+                    <div className="d-flex flex-wrap justify-content-between gap-2 align-items-center mb-2"><h4 className="h6 mb-0">Documento de cotizacion</h4><StatusBadge value={cotizacionActual.pdf_estado || "NO_GENERADO"} /></div>
+                    <div className="small text-secondary mb-3">{cotizacionActual.pdf_nombre_archivo || "Archivo aun no generado"} · Version {cotizacionActual.version} · {cotizacionActual.fecha_pdf ? formatDate(cotizacionActual.fecha_pdf) : "Sin fecha de generacion"}</div>
+                    <div className="d-flex flex-wrap gap-2">
+                      {canGeneratePdf ? <button className="btn btn-primary" type="button" disabled={saving === "generar-pdf"} onClick={handleGeneratePdf}>{saving === "generar-pdf" ? "Generando..." : "Generar PDF y cerrar cotizacion"}</button> : null}
+                      {canAccessPdf ? <><button className="btn btn-outline-primary" type="button" disabled={saving === "ver-pdf"} onClick={() => handlePdf(true)}>Ver PDF</button><button className="btn btn-outline-secondary" type="button" disabled={saving === "descargar-pdf"} onClick={() => handlePdf(false)}>Descargar PDF</button></> : null}
+                    </div>
+                  </div> : null}
+                  {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
                   {canEditTrabajo ? <div className="mt-3"><button className="btn btn-primary" type="button" disabled={!canFinalizarBorrador || saving === "finalizar-borrador"} onClick={handleFinalizarBorrador}>{saving === "finalizar-borrador" ? "Finalizando..." : "Finalizar borrador tecnico"}</button>{!hasDiagnostico ? <span className="text-secondary ms-3">Primero registra el diagnostico.</span> : null}</div> : null}
                   {borradorFinalizado ? <p className="alert alert-info mt-3 mb-0">El trabajo tecnico fue finalizado y quedo preparado para la siguiente etapa.</p> : null}
                 </div> : null}
