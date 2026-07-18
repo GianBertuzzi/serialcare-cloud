@@ -6,10 +6,10 @@ SerialCare Cloud se encuentra en la Evaluación 4 de Arquitectura Multicloud y D
 
 Los cuatro módulos funcionales definitivos son:
 
-1. Clientes, máquinas y trazabilidad.
-2. Reparaciones, inspección y garantías.
-3. Recepción, seguimiento, cotización y entrega.
-4. Inventario de repuestos por sucursal.
+1. Clientes, máquinas e historial.
+2. Recepción, cotización y entrega.
+3. Diagnóstico, reparación y garantías.
+4. Repuestos, inventario y documentos.
 
 La especificación funcional de referencia está en docs/EVALUACION_4_REQUERIMIENTOS.md. Antes de implementar cambios funcionales, revisar ese documento y contrastarlo con el código existente.
 
@@ -19,19 +19,23 @@ La especificación funcional de referencia está en docs/EVALUACION_4_REQUERIMIE
 - Backend: Node.js + Express.
 - Base de datos: PostgreSQL.
 - Contenedores: Docker.
-- Infraestructura: CloudFormation en AWS.
+- Arquitectura multicloud: infraestructura principal en AWS y almacenamiento documental en Azure Blob Storage.
 - Sesión con JWT y contraseñas con bcrypt.
 - Mantener frontend y backend separados.
 - El backend debe validar autenticación, rol, sucursal y propiedad de los recursos. Ocultar controles en el frontend no constituye autorización.
+- El producto se implementa inicialmente para un solo negocio de servicio técnico y no expone administración multisucursal.
+- Mantener `id_sucursal` y sus relaciones internas por compatibilidad, utilizando una sucursal predeterminada hasta una migración futura explícita.
 - No usar imágenes Docker con etiqueta latest.
 - Conservar tags específicos: node:20-alpine, nginx:1.27-alpine y postgres:16-alpine.
 - No versionar archivos .env reales. Mantener .env.example sin secretos reales.
 
 ## Roles activos
 
-Los roles activos para Evaluación 4 son MARCA, ADMIN, RECEPCIONISTA y TECNICO.
+Los roles activos para Evaluación 4 son ADMIN, RECEPCIONISTA y TECNICO.
 
-La cuenta CLIENTE no se implementará en esta etapa.
+El rol MARCA queda fuera del alcance funcional. No crear nuevas capacidades, rutas ni vistas para MARCA.
+
+La cuenta CLIENTE y su inicio de sesión quedan congelados en esta etapa.
 
 - No crear nuevas funciones, rutas, permisos, componentes ni vistas para CLIENTE.
 - No eliminar todavía código existente de CLIENTE si hacerlo puede romper funcionalidades actuales.
@@ -42,14 +46,15 @@ La cuenta CLIENTE no se implementará en esta etapa.
 
 - ADMIN y RECEPCIONISTA pueden registrar el ingreso inicial de una máquina.
 - TECNICO no crea el ingreso inicial.
-- TECNICO selecciona o toma una orden pendiente de su sucursal mediante una operación segura frente a concurrencia.
-- RECEPCIONISTA consulta estados, cotizaciones y entregas de su sucursal.
+- TECNICO selecciona o toma una orden pendiente mediante una operación segura frente a concurrencia.
+- RECEPCIONISTA consulta estados, cotizaciones, documentos y entregas.
 - RECEPCIONISTA no modifica diagnósticos, repuestos, precios ni descuentos.
 - ADMIN puede revisar precios y autorizar descuentos, dejando trazabilidad.
-- Clientes y máquinas pueden ser consultados desde distintas sucursales según los permisos definidos, sin trasladar automáticamente la propiedad de una orden.
-- Las órdenes pertenecen a la sucursal que recibe la máquina.
-- ADMIN, RECEPCIONISTA y TECNICO solo operan recursos de su sucursal, salvo una excepción documentada y autorizada en backend.
-- MARCA tiene alcance global para las capacidades documentadas, pero no ejecuta tareas operativas de una sucursal sin una regla explícita.
+- ADMIN puede ejecutar las mismas acciones técnicas que TECNICO, además de sus facultades administrativas.
+- RECEPCIONISTA puede crear clientes y máquinas cuando no existan, pero no editar clientes existentes.
+- Los usuarios no seleccionan libremente el estado de una orden; las acciones autorizadas ejecutan transiciones automáticas.
+- La sucursal predeterminada se obtiene del usuario autenticado o de configuración confiable del backend, nunca de un valor libre enviado por el frontend.
+- No mostrar ni administrar múltiples sucursales en esta etapa.
 - No implementar POS, caja, carrito, venta directa ni facturación de venta en esta evaluación.
 - No inventar estados, permisos o transiciones fuera de docs/EVALUACION_4_REQUERIMIENTOS.md sin documentar primero el cambio de alcance.
 
