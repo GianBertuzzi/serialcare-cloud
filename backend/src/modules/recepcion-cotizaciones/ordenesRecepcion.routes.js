@@ -779,6 +779,10 @@ router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), asy
     }
 
     const generatedAt = new Date();
+    const cotizacionEmitida = {
+      ...cotizacion,
+      estado: "ENVIADA"
+    };
     const pdfBuffer = await generateQuotationPdf({
       fecha_generacion: generatedAt,
       orden: {
@@ -800,7 +804,7 @@ router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), asy
         modelo: orden.modelo,
         numero_serie: orden.numero_serie
       },
-      cotizacion,
+      cotizacion: cotizacionEmitida,
       repuestos,
       responsable: orden.responsable_nombre
     });
@@ -816,7 +820,8 @@ router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), asy
 
     const updateResult = await client.query(
       `UPDATE cotizaciones
-      SET pdf_estado = 'GENERADO',
+      SET estado = 'ENVIADA',
+          pdf_estado = 'GENERADO',
           pdf_nombre_archivo = $1,
           pdf_blob_name = $2,
           pdf_url = $3,

@@ -154,6 +154,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const subtotalCotizacion = Number(cotizacionActual?.subtotal_original ?? totalPreliminar);
   const totalFinalCotizacion = Number(cotizacionActual?.total_final ?? subtotalCotizacion);
   const canEditDiscount = isAdmin
+    && requiereCotizacion
     && !isReadOnly
     && cotizacionActual?.estado === "BORRADOR"
     && cotizacionActual?.cerrada === false
@@ -161,9 +162,11 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const canGeneratePdf = canEditDiscount && requiereCotizacion && borradorFinalizado;
   const canAccessPdf = cotizacionActual?.cerrada === true
     && cotizacionActual?.pdf_estado === "GENERADO"
+    && requiereCotizacion
     && Boolean(cotizacionActual?.pdf_blob_name);
   const respuestaCotizacion = cotizacionActual?.respuesta || null;
   const canRespondQuotation = (isAdmin || isRecepcionista)
+    && requiereCotizacion
     && cotizacionActual?.cerrada === true
     && cotizacionActual?.pdf_estado === "GENERADO"
     && detalle?.orden?.estado === "ESPERANDO_APROBACION"
@@ -623,12 +626,19 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                 {activeTab === "borrador" ? <div className="detail-card">
                   <h3 className="h6">Borrador tecnico</h3>
                   <div className="detail-grid mb-3">
-                    <DetailItem label="Version actual">{cotizacionActual ? `Version ${cotizacionActual.version}` : "Sin cotizacion"}</DetailItem>
-                    <DetailItem label="Subtotal original">{cotizacionActual ? formatCurrency(subtotalCotizacion) : "No aplica"}</DetailItem>
-                    <DetailItem label="Descuento">{cotizacionActual?.tipo_descuento === "PORCENTAJE" ? `${cotizacionActual.valor_descuento}%` : cotizacionActual?.tipo_descuento === "MONTO_FIJO" ? formatCurrency(cotizacionActual.valor_descuento) : "Sin descuento"}</DetailItem>
-                    <DetailItem label="Total final">{cotizacionActual ? formatCurrency(totalFinalCotizacion) : (totalCliente === null ? "No usa cotizacion normal" : formatCurrency(totalCliente))}</DetailItem>
-                    <DetailItem label="Estado"><StatusBadge value={borradorFinalizado ? "FINALIZADO" : (cotizacionActual?.estado || "EN_EDICION")} /></DetailItem>
-                    <DetailItem label="PDF"><StatusBadge value={cotizacionActual?.pdf_estado || "NO_GENERADO"} /></DetailItem>
+                    {requiereCotizacion ? <>
+                      <DetailItem label="Version actual">{cotizacionActual ? `Version ${cotizacionActual.version}` : "Sin cotizacion"}</DetailItem>
+                      <DetailItem label="Subtotal original">{cotizacionActual ? formatCurrency(subtotalCotizacion) : "No aplica"}</DetailItem>
+                      <DetailItem label="Descuento">{cotizacionActual?.tipo_descuento === "PORCENTAJE" ? `${cotizacionActual.valor_descuento}%` : cotizacionActual?.tipo_descuento === "MONTO_FIJO" ? formatCurrency(cotizacionActual.valor_descuento) : "Sin descuento"}</DetailItem>
+                      <DetailItem label="Total final">{cotizacionActual ? formatCurrency(totalFinalCotizacion) : formatCurrency(totalCliente)}</DetailItem>
+                      <DetailItem label="Estado"><StatusBadge value={cotizacionActual?.estado || "EN_EDICION"} /></DetailItem>
+                      <DetailItem label="PDF"><StatusBadge value={cotizacionActual?.pdf_estado || "NO_GENERADO"} /></DetailItem>
+                    </> : <>
+                      <DetailItem label="Total repuestos">{formatCurrency(totalRepuestos)}</DetailItem>
+                      <DetailItem label="Mano de obra">{formatCurrency(manoObra)}</DetailItem>
+                      <DetailItem label="Total tecnico">{formatCurrency(totalPreliminar)}</DetailItem>
+                      <DetailItem label="Estado tecnico"><StatusBadge value={borradorFinalizado ? "FINALIZADO" : "EN_EDICION"} /></DetailItem>
+                    </>}
                   </div>
                   {garantiaAprobada ? <p className="alert alert-success">Garantia aprobada: el total del cliente es $0 y no se creara una cotizacion pagada.</p> : null}
                   {isGarantiaOrder && !hasFinalDecision ? <p className="alert alert-warning">Debes registrar la decision de garantia antes de finalizar.</p> : null}
@@ -638,12 +648,12 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                     {canReopenQuotation ? <button className="btn btn-primary" type="button" disabled={saving === "reabrir-cotizacion"} onClick={handleReopenQuotation}>{saving === "reabrir-cotizacion" ? "Reabriendo..." : "Preparar nueva cotizacion"}</button> : null}
                   </div> : null}
                   {cicloReabierto ? <p className="alert alert-info">Nuevo ciclo tecnico activo. Puedes ajustar repuestos y mano de obra; la cotizacion anterior permanece en solo lectura.</p> : null}
-                  {detalle.cotizaciones?.length > 0 ? <div className="table-responsive mb-3">
+                  {requiereCotizacion && detalle.cotizaciones?.length > 0 ? <div className="table-responsive mb-3">
                     <table className="table table-sm align-middle serial-table">
                       <thead><tr><th>Version</th><th>Estado</th><th>Total final</th><th>PDF</th><th>Respuesta</th><th>Fecha</th></tr></thead>
                       <tbody>{detalle.cotizaciones.map((cotizacion) => <tr key={cotizacion.version}>
                         <td>Version {cotizacion.version}</td>
-                        <td><StatusBadge value={cotizacion.cerrada ? "CERRADA" : cotizacion.estado} /></td>
+                        <td><StatusBadge value={cotizacion.estado} /></td>
                         <td>{formatCurrency(cotizacion.total_final)}</td>
                         <td><StatusBadge value={cotizacion.pdf_estado || "NO_GENERADO"} /></td>
                         <td>{cotizacion.respuesta ? <><StatusBadge value={cotizacion.respuesta} /><span className="table-subtext">{cotizacion.registrada_por_nombre || "Usuario"} · {formatDate(cotizacion.fecha_respuesta_cliente)}</span></> : "Sin respuesta"}</td>
@@ -657,7 +667,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                     <div className="col-md-5"><label className="form-label">Motivo</label><input className="form-control" disabled={!discountForm.tipo_descuento} required={Boolean(discountForm.tipo_descuento)} value={discountForm.motivo_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, motivo_descuento: event.target.value }))} /></div>
                     <div className="col-12"><button className="btn btn-outline-primary" disabled={saving === "descuento"}>{saving === "descuento" ? "Guardando..." : "Guardar descuento"}</button></div>
                   </form> : null}
-                  {cotizacionActual ? <div className="border rounded-2 p-3 mb-3">
+                  {requiereCotizacion && cotizacionActual ? <div className="border rounded-2 p-3 mb-3">
                     <div className="d-flex flex-wrap justify-content-between gap-2 align-items-center mb-2"><h4 className="h6 mb-0">Documento de cotizacion</h4><StatusBadge value={cotizacionActual.pdf_estado || "NO_GENERADO"} /></div>
                     <div className="small text-secondary mb-3">{cotizacionActual.pdf_nombre_archivo || "Archivo aun no generado"} · Version {cotizacionActual.version} · {cotizacionActual.fecha_pdf ? formatDate(cotizacionActual.fecha_pdf) : "Sin fecha de generacion"}</div>
                     <div className="d-flex flex-wrap gap-2">

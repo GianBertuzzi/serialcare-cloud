@@ -52,7 +52,7 @@ function generateQuotationPdf(data) {
 
     doc.rect(0, 0, 595, 100).fill("#0f172a");
     doc.fillColor("#ffffff").font("Helvetica-Bold").fontSize(22).text("SerialCare Cloud", 42, 32);
-    doc.font("Helvetica").fontSize(11).text("Cotizacion de servicio tecnico", 42, 62);
+    doc.font("Helvetica").fontSize(11).text("Cotizacion emitida", 42, 62);
     doc.font("Helvetica-Bold").fontSize(12).text(`Orden ${data.orden.id_orden} - Version ${data.cotizacion.version}`, 340, 38, { width: 213, align: "right" });
     doc.font("Helvetica").fontSize(9).text(formatDate(data.fecha_generacion), 340, 61, { width: 213, align: "right" });
     doc.y = 120;

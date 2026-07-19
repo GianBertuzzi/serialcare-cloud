@@ -668,6 +668,7 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
     const requiereCotizacion = tipoOrden === "REPARACION" || garantiaRechazada;
     const valorIngresoAplicado = tipoOrden === "REPARACION" ? valorIngresoOrden : 0;
     const totalTrabajo = totalRepuestos + manoObra + (requiereCotizacion ? valorIngresoAplicado : valorIngresoOrden);
+    const estadoResultante = tipoOrden === "MANTENCION" ? "EN_REPARACION" : access.orden.estado;
     const totalCliente = garantiaAprobada ? 0 : (requiereCotizacion ? totalRepuestos + manoObra + valorIngresoAplicado : null);
     let cotizacion = null;
 
@@ -688,19 +689,22 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
 
     await client.query(
       `UPDATE ordenes_servicio
-      SET version = version + 1
-      WHERE id_orden = $1`,
-      [idOrden]
+      SET estado = $1,
+          version = version + 1
+      WHERE id_orden = $2
+        AND estado = $3`,
+      [estadoResultante, idOrden, access.orden.estado]
     );
 
     await client.query(
       `INSERT INTO historial_estados_orden (
         id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
       )
-      VALUES ($1, $2, $2, $3, 'FINALIZAR_BORRADOR_TECNICO', $4)`,
+      VALUES ($1, $2, $3, $4, 'FINALIZAR_BORRADOR_TECNICO', $5)`,
       [
         idOrden,
         access.orden.estado,
+        estadoResultante,
         req.usuario.id_usuario,
         `Tipo ${tipoOrden}; version ${cotizacion?.version || "SIN_COTIZACION"}; total repuestos ${totalRepuestos}; mano de obra ${manoObra}; total cliente ${totalCliente ?? 0}`
       ]
