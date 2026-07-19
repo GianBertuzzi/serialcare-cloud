@@ -89,6 +89,53 @@ function getModulePort(portVariable, defaultPort) {
   return port;
 }
 
+function registerGracefulShutdown(server, moduleName) {
+  let shuttingDown = false;
+
+  const shutdown = (signal) => {
+    if (shuttingDown) {
+      return;
+    }
+
+    shuttingDown = true;
+    console.log(`[Shutdown:${moduleName}] ${signal} recibido; cerrando servidor`);
+
+    const timeout = setTimeout(() => {
+      console.error(`[Shutdown:${moduleName}] Tiempo de cierre agotado`);
+      process.exit(1);
+    }, 10000);
+    timeout.unref();
+
+    server.close(async (error) => {
+      if (error) {
+        clearTimeout(timeout);
+        console.error(`[Shutdown:${moduleName}] Error cerrando servidor:`, {
+          message: error.message,
+          code: error.code
+        });
+        process.exit(1);
+        return;
+      }
+
+      try {
+        await db.pool.end();
+        clearTimeout(timeout);
+        console.log(`[Shutdown:${moduleName}] Cierre completado`);
+        process.exit(0);
+      } catch (poolError) {
+        clearTimeout(timeout);
+        console.error(`[Shutdown:${moduleName}] Error cerrando PostgreSQL:`, {
+          message: poolError.message,
+          code: poolError.code
+        });
+        process.exit(1);
+      }
+    });
+  };
+
+  process.once("SIGTERM", () => shutdown("SIGTERM"));
+  process.once("SIGINT", () => shutdown("SIGINT"));
+}
 function startModuleServer({ app, moduleName, portVariable, defaultPort }) {
   if (!process.env.JWT_SECRET) {
     console.error(`[Config:${moduleName}] JWT_SECRET no esta configurado`);
@@ -116,6 +163,8 @@ function startModuleServer({ app, moduleName, portVariable, defaultPort }) {
     });
     process.exitCode = 1;
   });
+
+  registerGracefulShutdown(server, moduleName);
 
   return server;
 }

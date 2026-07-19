@@ -5,6 +5,10 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
+    "start:clientes-maquinas": "node src/apps/clientesMaquinas.server.js",
+    "start:recepcion-cotizaciones": "node src/apps/recepcionCotizaciones.server.js",
+    "start:diagnostico-garantias": "node src/apps/diagnosticoGarantias.server.js",
+    "start:inventario-documentos": "node src/apps/inventarioDocumentos.server.js",
     "dev": "node --watch src/server.js",
     "migrate": "node src/scripts/migrate.js",
     "test": "node --test"

@@ -1,0 +1,118 @@
+name: serialcare-eval4
+
+x-module-environment: &module-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-serialcare_user}:${POSTGRES_PASSWORD:-serialcare_pass}@postgres:5432/${POSTGRES_DB:-serialcare_db}
+  JWT_SECRET: ${JWT_SECRET:-cambiar_este_secreto_en_nube}
+  FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8080,http://localhost:5173}
+  AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING:-}
+  AZURE_BLOB_CONTAINER: ${AZURE_BLOB_CONTAINER:-serialcare}
+  AZURE_STORAGE_CONTAINER: ${AZURE_STORAGE_CONTAINER:-evidencias}
+  AZURE_STORAGE_PUBLIC_BASE_URL: ${AZURE_STORAGE_PUBLIC_BASE_URL:-}
+
+x-module-common: &module-common
+  init: true
+  restart: unless-stopped
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+  networks:
+    - eval4-internal
+  stop_grace_period: 15s
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-serialcare_db}
+      POSTGRES_USER: ${POSTGRES_USER:-serialcare_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-serialcare_pass}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_eval4_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - eval4-internal
+
+  migrate:
+    image: serialcare-eval4-clientes-maquinas:1.0.0
+    command: ["npm", "run", "migrate"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-serialcare_user}:${POSTGRES_PASSWORD:-serialcare_pass}@postgres:5432/${POSTGRES_DB:-serialcare_db}
+    volumes:
+      - ./database/migrations:/database/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    restart: "no"
+    networks:
+      - eval4-internal
+
+  clientes-maquinas:
+    <<: *module-common
+    image: serialcare-eval4-clientes-maquinas:1.0.0
+    build:
+      context: ./backend
+      dockerfile: services/clientes-maquinas/Dockerfile
+    environment:
+      <<: *module-environment
+      PORT_CLIENTES_MAQUINAS: 3001
+    ports:
+      - "3001:3001"
+
+  recepcion-cotizaciones:
+    <<: *module-common
+    image: serialcare-eval4-recepcion-cotizaciones:1.0.0
+    build:
+      context: ./backend
+      dockerfile: services/recepcion-cotizaciones/Dockerfile
+    environment:
+      <<: *module-environment
+      PORT_RECEPCION_COTIZACIONES: 3002
+    ports:
+      - "3002:3002"
+
+  diagnostico-garantias:
+    <<: *module-common
+    image: serialcare-eval4-diagnostico-garantias:1.0.0
+    build:
+      context: ./backend
+      dockerfile: services/diagnostico-garantias/Dockerfile
+    environment:
+      <<: *module-environment
+      PORT_DIAGNOSTICO_GARANTIAS: 3003
+    ports:
+      - "3003:3003"
+
+  inventario-documentos:
+    <<: *module-common
+    image: serialcare-eval4-inventario-documentos:1.0.0
+    build:
+      context: ./backend
+      dockerfile: services/inventario-documentos/Dockerfile
+    environment:
+      <<: *module-environment
+      PORT_INVENTARIO_DOCUMENTOS: 3004
+    ports:
+      - "3004:3004"
+
+volumes:
+  postgres_eval4_data:
+
+networks:
+  eval4-internal:
+    driver: bridge
