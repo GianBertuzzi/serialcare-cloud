@@ -19,6 +19,8 @@
       - gateway_port | int >= 1024
       - gateway_port | int <= 65535
       - serialcare_frontend_url | length > 7
+      - bootstrap_admin_name | length > 0
+      - bootstrap_admin_email is match('^[^@ ]+@[^@ ]+[.][^@ ]+$')
       - "'IP_PUBLICA' not in serialcare_frontend_url"
     fail_msg: Revise las variables no secretas de group_vars/all.yml.
 
@@ -26,6 +28,8 @@
   ansible.builtin.assert:
     that:
       - database_password | length >= 12
+      - bootstrap_admin_password | length >= 8
+      - "'CAMBIAR' not in bootstrap_admin_password"
       - "'CAMBIAR' not in database_password"
       - database_password is match('^[A-Za-z0-9_+=,.@%:/;-]+$')
       - jwt_secret | length >= 32

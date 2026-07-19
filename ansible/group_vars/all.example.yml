@@ -10,6 +10,13 @@ serialcare_deploy_user: "{{ ansible_user }}"
 database_name: "serialcare_db"
 database_user: "serialcare_user"
 database_password: "CAMBIAR_CON_ANSIBLE_VAULT"
+# Vacio usa PostgreSQL local de Compose. En AWS use el output RdsEndpointAddress.
+database_host: ""
+database_port: 5432
+database_sslmode: "no-verify"
+bootstrap_admin_name: "Administrador SerialCare"
+bootstrap_admin_email: "admin@serialcare.cl"
+bootstrap_admin_password: "CAMBIAR_CON_ANSIBLE_VAULT"
 jwt_secret: "CAMBIAR_CON_ANSIBLE_VAULT_MINIMO_32_CARACTERES"
 
 # Puede permanecer vacio para validar el stack local. La generacion de PDF y

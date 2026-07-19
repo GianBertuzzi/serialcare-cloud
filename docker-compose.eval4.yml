@@ -1,3 +1,5 @@
+# EVALUACION 4: stack modular local. Los puertos de PostgreSQL y modulos se
+# eliminan en AWS/Ansible mediante un override; solo el gateway queda publico.
 name: serialcare-eval4
 
 x-module-environment: &module-environment
@@ -41,8 +43,6 @@ services:
       - "5433:5432"
     volumes:
       - postgres_eval4_data:/var/lib/postgresql/data
-      - ./database/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
-      - ./database/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -62,12 +62,18 @@ services:
 
   migrate:
     image: serialcare-eval4-clientes-maquinas:1.0.0
-    command: ["npm", "run", "migrate"]
+    command: ["npm", "run", "db:initialize"]
     environment:
       NODE_ENV: production
       NPM_CONFIG_CACHE: /tmp/.npm
       DATABASE_URL: postgresql://${POSTGRES_USER:-serialcare_user}:${POSTGRES_PASSWORD:-serialcare_pass}@postgres:5432/${POSTGRES_DB:-serialcare_db}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrador SerialCare}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      BOOTSTRAP_ADMIN_PASSWORD_HASH: ${BOOTSTRAP_ADMIN_PASSWORD_HASH:-}
     volumes:
+      - ./database/bootstrap.sql:/database/bootstrap.sql:ro
+      - ./database/bootstrap-seed.sql:/database/bootstrap-seed.sql:ro
       - ./database/migrations:/database/migrations:ro
     read_only: true
     security_opt:

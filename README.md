@@ -5,10 +5,10 @@ SerialCare Cloud es una PoC academica para trazabilidad, garantia y servicio tec
 ## Stack
 
 - Frontend: React + Vite servido por Nginx en Docker.
-- Backend: Node.js + Express.
+- Backend: cuatro aplicaciones Node.js + Express (clientes-maquinas, recepcion-cotizaciones, diagnostico-garantias e inventario-documentos).
 - Base de datos: PostgreSQL.
-- Contenedores: Docker Compose.
-- Nube objetivo: EC2 detras de AWS Application Load Balancer, Amazon RDS PostgreSQL y Bastion Host para administracion SSH segura.
+- Contenedores: Docker Compose con migrador centralizado y gateway Nginx.
+- Nube objetivo: gateway en una EC2 privada detras de AWS Application Load Balancer y Amazon RDS PostgreSQL privado.
 - Evidencias: Azure Blob Storage para archivos adjuntos de ordenes.
 
 No se usa XAMPP. El proyecto usa Docker, Node, React y PostgreSQL.
@@ -22,6 +22,10 @@ PORT=3000
 NODE_ENV=development
 DATABASE_URL=postgresql://serialcare_user:serialcare_pass@localhost:5433/serialcare_db
 JWT_SECRET=cambiar_este_secreto
+BOOTSTRAP_ADMIN_NAME=Administrador SerialCare
+BOOTSTRAP_ADMIN_EMAIL=admin@serialcare.cl
+BOOTSTRAP_ADMIN_PASSWORD=definir_solo_en_env_local
+BOOTSTRAP_ADMIN_PASSWORD_HASH=
 FRONTEND_URL=http://localhost:5173
 AZURE_STORAGE_CONNECTION_STRING=
 AZURE_STORAGE_CONTAINER=evidencias
@@ -66,49 +70,43 @@ URLs de desarrollo:
 - Backend health: http://localhost:3000/api/health
 - PostgreSQL local: localhost:5433
 
-## Docker Completo Local
+## Docker modular de Evaluacion 4
 
-Construir y levantar PostgreSQL, backend y frontend:
-
-```powershell
-docker compose up -d --build
-```
-
-URLs Docker:
-
-- Frontend Docker: http://localhost:8080
-- Backend health: http://localhost:3000/api/health
-- PostgreSQL: localhost:5433
-
-Para reiniciar la base desde cero cuando cambian `schema.sql` o `seed.sql`:
+Construir y levantar PostgreSQL local, migrador, cuatro modulos y gateway:
 
 ```powershell
-docker compose down -v
-docker compose up -d --build
-docker ps
+docker compose -f docker-compose.eval4.yml up -d --build
 ```
 
-## Health Check
+Servicios locales:
 
-El balanceador debe consultar:
+- Gateway y frontend: http://localhost:8080
+- Clientes y maquinas: http://localhost:3001
+- Recepcion y cotizaciones: http://localhost:3002
+- Diagnostico y garantias: http://localhost:3003
+- Inventario y documentos: http://localhost:3004
+- PostgreSQL local: localhost:5433
+
+El servicio one-shot `migrate` ejecuta `npm run db:initialize`, crea de forma
+segura el esquema base cuando PostgreSQL está vacío y después registra las
+migraciones aplicadas. Los puertos 3001-3004 se publican solo para pruebas
+locales; el override AWS/Ansible los retira y deja unicamente el gateway.
+
+`docker-compose.yml` se conserva como entorno monolitico local heredado de
+Evaluacion 3. `docker-compose.prod.yml` es una referencia obsoleta y no debe
+usarse para el despliegue actual.
+
+## Health checks
+
+El gateway publico responde:
 
 ```text
-GET /api/health
+GET /health
 ```
 
-Respuesta esperada cuando backend y PostgreSQL estan operativos:
-
-```json
-{
-  "status": "ok",
-  "service": "serialcare-backend",
-  "timestamp": "2026-06-25T00:00:00.000Z",
-  "database": "ok"
-}
-```
-
-Si PostgreSQL falla, responde `503` y `database: "error"`.
-
+Cada modulo expone internamente `GET /health` y `GET /health/db`. El gateway
+solo queda saludable cuando los cuatro modulos han iniciado; `/health/db`
+comprueba la conexion compartida a PostgreSQL.
 
 ## Azure Blob Storage
 
@@ -132,77 +130,33 @@ Limites de archivos:
 - Tamano maximo: 10 MB.
 - Tipos permitidos: JPG, PNG, WEBP, PDF, TXT, DOC y DOCX.
 
-## Preparacion Para Nube
+## Arquitectura y despliegue actual
 
-Arquitectura objetivo:
+La Evaluacion 4 utiliza cuatro imagenes backend independientes, un gateway
+Nginx, PostgreSQL compartido y el servicio `migrate` como unico ejecutor de
+migraciones. En AWS, el ALB es la unica entrada publica; la EC2, los modulos y
+RDS permanecen privados. Los puertos 3001-3004 no se publican en el despliegue.
 
-- CloudFormation crea la VPC, dos subredes publicas, Bastion, EC2 App 1, EC2 App 2, Application Load Balancer, Target Group y RDS PostgreSQL.
-- AWS Application Load Balancer recibe trafico HTTP.
-- EC2 App 1 y EC2 App 2 ejecutan Docker con backend/frontend.
-- Amazon RDS PostgreSQL reemplaza al contenedor `postgres` en produccion.
-- Security Groups limitan trafico: ALB hacia EC2, EC2 hacia RDS, SSH solo desde Bastion.
-- El acceso SSH al Bastion se permite solo desde `AllowedSSHIp` en formato `/32`; las EC2 App aceptan SSH solo desde el Bastion.
-- El Bastion usa una IP publica temporal en el laboratorio. En produccion se podria asociar una Elastic IP.
-- Azure Blob Storage almacena evidencias adjuntas de ordenes.
+CloudFormation crea la infraestructura y realiza el bootstrap inicial con
+`docker-compose.eval4.yml` y un override para RDS. Ansible es la opcion
+recomendada para configurar una VM Linux y aplicar actualizaciones repetibles.
+`bootstrap.sql` y `bootstrap-seed.sql` inicializan de forma no destructiva una
+base vacía; `schema.sql` y `seed.sql` quedan fuera del despliegue actual.
 
-Variables esperadas en EC2/backend:
+Documentacion:
 
-```env
-PORT=3000
-NODE_ENV=production
-DATABASE_URL=postgresql://usuario:password@rds-endpoint:5432/serialcare_db?sslmode=no-verify
-JWT_SECRET=secreto_largo_y_unico
-FRONTEND_URL=http://DNS_PUBLICO_DEL_ALB
-AZURE_STORAGE_CONNECTION_STRING=DefaultEndpointsProtocol=...
-AZURE_STORAGE_CONTAINER=evidencias
-AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
-```
+- [Despliegue AWS](docs/AWS_DEPLOYMENT.md)
+- [Pipeline DevSecOps](docs/DEVSECOPS_PIPELINE.md)
+- [Automatizacion Ansible](ansible/README.md)
 
-CloudFormation genera estas variables en cada EC2. `FRONTEND_URL` se construye automaticamente con el DNS publico del ALB y RDS se conecta por SSL con `sslmode=no-verify`, configuracion aceptada para este laboratorio. En produccion se debe validar el certificado con una CA de confianza.
+Azure Blob Storage puede quedar sin credenciales para healthchecks locales,
+pero PDF y evidencias reales requieren una cadena de conexion valida.
 
-Las variables `AZURE_STORAGE_*` son opcionales y se entregan externamente al desplegar; no se guardan secretos reales en el repositorio.
+## Validacion manual
 
-
-
-## Flujo Local, GitHub, AWS y Azure
-
-- Local: la app se desarrolla y prueba en el PC con `npm run dev`, `docker compose up -d postgres` o `docker compose up -d --build`.
-- GitHub: almacena el codigo que luego clonaran las EC2 App mediante `GitHubRepoUrl`.
-- AWS: ejecuta la app real con EC2 App 1, EC2 App 2, Application Load Balancer, RDS PostgreSQL y Bastion Host.
-- Azure: almacena evidencias en Blob Storage mediante variables `AZURE_STORAGE_*`.
-- No se configuran IPs manualmente para EC2 ni RDS; AWS entrega esos datos como outputs del stack.
-- La unica IP manual importante es `AllowedSSHIp`: corresponde a la IP publica del administrador en formato `x.x.x.x/32` para entrar al Bastion.
-- Las EC2 App no reciben SSH directo desde internet; se administran entrando primero al Bastion.
-
-## Despliegue AWS
-
-La infraestructura AWS queda preparada en `infrastructure/cloudformation-serialcare.yaml` con VPC, dos subredes publicas, Application Load Balancer, Target Group, dos EC2 App con Docker, Bastion Host, Security Groups y RDS PostgreSQL.
-
-Para produccion se usa `docker-compose.prod.yml`, que levanta solo backend y frontend. La base de datos productiva es Amazon RDS, no un contenedor PostgreSQL local.
-
-Al finalizar el despliegue, la aplicacion queda disponible en el output `LoadBalancerUrl`. El ALB comprueba cada nodo mediante `GET /api/health`.
-
-Durante el primer arranque, EC2 App 1 espera a RDS e inicializa automaticamente `database/schema.sql` y luego `database/seed.sql` con `postgres:16-alpine`. EC2 App 2 solo levanta frontend y backend. El resultado queda en `/var/log/serialcare-db-init.log` de App 1.
-
-Documentacion paso a paso:
-
-```text
-docs/AWS_DEPLOYMENT.md
-```
-
-Puntos clave:
-
-- Docker local: `docker compose up -d --build`.
-- Docker produccion: `docker compose -f docker-compose.prod.yml up -d --build`.
-- Multicloud: evidencias en Azure Blob Storage mediante `AZURE_STORAGE_*`.
-- Alta disponibilidad: ALB balancea entre EC2 App 1 y EC2 App 2 usando `/api/health`.
-- Administracion segura: SSH entra por Bastion Host solo desde `AllowedSSHIp /32` y luego a las EC2 App por IP privada.
-
-## Validacion Manual
-
-1. Ejecutar `docker compose up -d --build`.
-2. Abrir `http://localhost:3000/api/health` y confirmar `database: "ok"`.
-3. Abrir `http://localhost:8080`.
-4. Iniciar sesion con `admin.temuco@serialcare.cl / Admin123`.
-5. Confirmar que el frontend puede consumir el backend.
-6. Confirmar que el backend puede consultar PostgreSQL.
+1. Ejecutar `docker compose -f docker-compose.eval4.yml up -d --build`.
+2. Confirmar que `migrate` termina con codigo 0 y los cinco servicios quedan saludables.
+3. Abrir `http://localhost:8080/health`.
+4. Iniciar sesion desde `http://localhost:8080`.
+5. Validar clientes, ordenes, garantias y repuestos a traves de la unica base `/api`.
+6. Ejecutar `docker compose -f docker-compose.eval4.yml down` sin `-v` para conservar datos.

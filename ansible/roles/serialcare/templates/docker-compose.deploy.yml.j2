@@ -1,13 +1,50 @@
 services:
   postgres:
+{% if database_host | default('') | length > 0 %}
+    profiles: ["local-database"]
+{% endif %}
     ports: !reset []
+{% if database_host | default('') | length > 0 %}
+  migrate:
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !reset {}
+{% endif %}
   clientes-maquinas:
+{% if database_host | default('') | length > 0 %}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+{% endif %}
     ports: !reset []
   recepcion-cotizaciones:
+{% if database_host | default('') | length > 0 %}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+{% endif %}
     ports: !reset []
   diagnostico-garantias:
+{% if database_host | default('') | length > 0 %}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+{% endif %}
     ports: !reset []
   inventario-documentos:
+{% if database_host | default('') | length > 0 %}
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    depends_on: !override
+      migrate:
+        condition: service_completed_successfully
+{% endif %}
     ports: !reset []
   frontend-gateway:
     ports: !override

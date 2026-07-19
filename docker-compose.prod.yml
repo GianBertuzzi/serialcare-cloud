@@ -1,3 +1,5 @@
+# OBSOLETO: despliegue monolitico conservado solo como referencia historica.
+# No usar para Evaluacion 4; use docker-compose.eval4.yml con el override del entorno.
 services:
   backend:
     image: serialcare-backend:1.0.0

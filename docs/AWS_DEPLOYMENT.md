@@ -1,306 +1,235 @@
-# Despliegue AWS - SerialCare Cloud
+# Despliegue AWS - SerialCare Cloud Evaluación 4
 
-Esta guia prepara el despliegue academico de SerialCare Cloud en AWS con alta disponibilidad basica, Docker y RDS PostgreSQL. Azure Blob Storage se mantiene como servicio externo multicloud para evidencias.
+Esta guía describe la arquitectura modular vigente. La infraestructura se define en `infrastructure/cloudformation-serialcare.yaml`; la aplicación se ejecuta con `docker-compose.eval4.yml` y un override que conecta los contenedores a Amazon RDS sin publicar PostgreSQL ni los puertos internos.
 
-## Arquitectura general
-
-Componentes principales:
-
-- Application Load Balancer publico en HTTP 80.
-- Dos instancias EC2 App en subredes publicas distintas.
-- Docker Compose de produccion en cada EC2 App.
-- Frontend React servido por Nginx.
-- Backend Node.js/Express en contenedor interno.
-- Amazon RDS PostgreSQL como base de datos centralizada.
-- Bastion Host para administracion SSH segura.
-- Security Groups separados por responsabilidad.
-- Azure Blob Storage externo para evidencias, configurado por variables de entorno.
-
-CloudFormation crea desde cero la VPC, las dos subredes, el Bastion, EC2 App 1, EC2 App 2, el Application Load Balancer, el Target Group y RDS. El Bastion recibe una IP publica temporal apropiada para el laboratorio; en produccion se podria asociar una Elastic IP para mantener una direccion estable.
-
-## Diagrama textual
+## Arquitectura
 
 ```text
 Internet
   |
   v
-AWS Application Load Balancer :80
-  |
-  +--> EC2 App 1 :80 -> Nginx frontend -> /api -> backend :3000
-  |
-  +--> EC2 App 2 :80 -> Nginx frontend -> /api -> backend :3000
-                 |
-                 v
-          Amazon RDS PostgreSQL :5432
-
-Admin SSH
+Application Load Balancer público :80
   |
   v
-Bastion Host :22
+EC2 privada :80
   |
-  +--> EC2 App 1 :22
-  +--> EC2 App 2 :22
+  v
+frontend-gateway Nginx :8080
+  |--------------------|----------------------|---------------------|
+  v                    v                      v                     v
+clientes-maquinas   recepcion-cotizaciones diagnostico-garantias inventario-documentos
+      :3001                :3002                  :3003                 :3004
+  |-------------------- PostgreSQL compartido -------------------------|
+                               |
+                               v
+                      Amazon RDS privado :5432
 
-Azure Blob Storage externo
-  ^
-  |
-Backend usa AZURE_STORAGE_* para evidencias
+inventario-documentos ---> Azure Blob Storage
 ```
 
-## Archivos relevantes
+El ALB es el único punto público. La EC2 no recibe IP pública; los cuatro módulos, el migrador y RDS permanecen en red privada. No existe Bastion ni acceso SSH público en esta plantilla.
 
-- `infrastructure/cloudformation-serialcare.yaml`: infraestructura AWS.
-- `docker-compose.prod.yml`: app productiva sin PostgreSQL local.
-- `frontend/nginx.conf`: sirve React y proxyea `/api` al backend.
-- `backend/.env.example`: variables esperadas.
+La implementación académica usa un solo host de aplicación para que exista un único propietario del ciclo de migración. Esto evita que dos hosts ejecuten el servicio one-shot simultáneamente. No proporciona alta disponibilidad de cómputo; esa mejora requiere imágenes publicadas y una estrategia de despliegue coordinada antes de escalar horizontalmente.
 
+## Responsabilidades
 
-## Flujo local a nube
+- CloudFormation crea VPC, subredes, NAT Gateway, Security Groups, ALB, EC2 privada y RDS.
+- `UserData` realiza el bootstrap inicial del host, verifica Docker Compose, obtiene la rama configurada y levanta el stack modular.
+- Ansible es la vía recomendada para actualizaciones repetibles sobre una VM Linux accesible por un canal administrativo privado.
+- `docker-compose.eval4.yml` define el gateway, los cuatro módulos, PostgreSQL local y el servicio `migrate`.
+- El override AWS desactiva PostgreSQL local, elimina los puertos 3001-3004 y conecta `migrate` y los módulos al RDS compartido.
+- Solo el servicio `migrate` ejecuta `npm run db:initialize`: aplica el bootstrap únicamente sobre una base vacía y después las migraciones pendientes. Los cuatro módulos esperan que termine correctamente.
+- Azure Blob Storage permanece externo a AWS y se configura por variables de entorno.
 
-1. Desarrollo local:
+CloudFormation y Ansible son alternativas de bootstrap, no dos procesos que deban ejecutarse al mismo tiempo. Tras crear la infraestructura, use Ansible para actualizaciones controladas cuando disponga de conectividad administrativa hacia la VM.
 
-   - Trabaja primero en tu PC con `npm run dev` para backend y frontend.
-   - Usa `docker compose up -d postgres` o `docker compose up -d --build` para pruebas locales con Docker.
-   - Prueba login, dashboards, `/api/health` y flujos principales antes de subir cambios.
+## Puertos y exposición
 
-2. Repositorio GitHub:
+| Componente | Puerto interno | Exposición AWS |
+|---|---:|---|
+| ALB | 80 | Público |
+| frontend-gateway | 8080, publicado como 80 en EC2 | Solo desde el Security Group del ALB |
+| clientes-maquinas | 3001 | Solo red Docker |
+| recepcion-cotizaciones | 3002 | Solo red Docker |
+| diagnostico-garantias | 3003 | Solo red Docker |
+| inventario-documentos | 3004 | Solo red Docker |
+| RDS PostgreSQL | 5432 | Solo desde el Security Group de la EC2 |
 
-   - Guarda cambios con `git add .`.
-   - Crea commit con `git commit -m "mensaje"`.
-   - Sube el codigo con `git push`.
-   - CloudFormation usa `GitHubRepoUrl` para que cada EC2 App clone este repositorio.
-   - Si el repositorio es privado, debes hacerlo publico temporalmente o usar un metodo seguro como deploy key/token. No hardcodear tokens ni credenciales en el template.
+Los puertos locales 5433 y 3001-3004 del Compose base se eliminan mediante el override de AWS/Ansible.
 
-3. AWS:
+## Parámetros reales de CloudFormation
 
-   - CloudFormation crea VPC, subredes, Security Groups, EC2 App 1, EC2 App 2, ALB, RDS y Bastion.
-   - Cada EC2 App clona el repositorio desde `GitHubRepoUrl`.
-   - Cada EC2 App crea `backend/.env` con el endpoint de RDS, SSL de laboratorio y el DNS publico del ALB.
-   - Cada EC2 App ejecuta `docker compose -f docker-compose.prod.yml up -d --build`.
-   - El Load Balancer entrega una URL publica en el output `LoadBalancerUrl`.
-   - RDS entrega un endpoint privado en `RdsEndpointAddress`.
-   - Bastion entrega una IP publica en `BastionPublicIp` para administracion SSH.
-   - Las EC2 App no deben recibir SSH directo desde internet.
+| Parámetro | Descripción |
+|---|---|
+| `DBName` | Nombre de la base, por defecto `serialcare_db`. |
+| `DBUsername` | Usuario administrador de PostgreSQL. |
+| `DBPassword` | Contraseña RDS, marcada `NoEcho`. |
+| `InstanceType` | Tipo de EC2 privada. |
+| `VpcCidr` | CIDR de la VPC. |
+| `PublicSubnet1Cidr`, `PublicSubnet2Cidr` | CIDR de subredes del ALB y NAT. |
+| `PrivateSubnet1Cidr`, `PrivateSubnet2Cidr` | CIDR de aplicación y RDS. |
+| `GitHubRepoUrl` | URL HTTPS del repositorio. |
+| `RepositoryRef` | Rama a desplegar; por defecto `evaluacion-4-devsecops`. |
+| `BootstrapAdminName` | Nombre del ADMIN inicial creado solamente en una base vacía. |
+| `BootstrapAdminEmail` | Correo del ADMIN inicial. |
+| `BootstrapAdminPassword` | Contraseña inicial, marcada `NoEcho` y convertida a bcrypt por el migrador. |
+| `JwtSecret` | Secreto JWT compartido, marcado `NoEcho`. |
+| `AzureStorageConnectionString` | Conexión Azure, marcada `NoEcho`; puede quedar vacía para validación sin documentos reales. |
+| `AzureStorageContainer` | Contenedor Azure. |
+| `AzureStoragePublicBaseUrl` | URL base pública de Blob Storage cuando corresponda. |
+| `LatestAmiId` | AMI Amazon Linux 2023 obtenida desde SSM. |
 
-4. Azure:
+La plantilla no define `KeyName`, `AllowedSSHIp` ni recursos Bastion.
 
-   - Azure Blob Storage se crea aparte de AWS.
-   - El equipo Azure entrega `AZURE_STORAGE_CONNECTION_STRING`, `AZURE_STORAGE_CONTAINER` y `AZURE_STORAGE_PUBLIC_BASE_URL`.
-   - Esas variables se pasan al backend en AWS mediante parametros CloudFormation y `backend/.env`.
+## Outputs reales
 
-5. Prueba final:
+- `LoadBalancerDnsName`
+- `LoadBalancerUrl`
+- `HealthCheckUrl`
+- `AppPrivateIp`
+- `AppInstanceId`
+- `RdsEndpointAddress`
+- `RdsEndpointPort`
+- `VpcId`
+- `LoadBalancerSecurityGroupId`
+- `AppSecurityGroupId`
+- `RdsSecurityGroupId`
 
-   - Abre `LoadBalancerUrl` en el navegador.
-   - Prueba `HealthCheckUrl` o `LoadBalancerUrl/api/health`.
-   - Apaga Docker en una EC2 App.
-   - Confirma que el Target Group marca esa instancia como `unhealthy`.
-   - Confirma que el Load Balancer sigue respondiendo con la otra EC2 App.
+## Validación y despliegue
 
-## Parametros CloudFormation
-
-Completar al desplegar:
-
-- `KeyName`: nombre del par de llaves EC2 existente.
-- `AllowedSSHIp`: IP publica autorizada para SSH hacia Bastion. Usar formato `x.x.x.x/32`. No usar `0.0.0.0/0`.
-- `DBName`: por defecto `serialcare_db`.
-- `DBUsername`: por defecto `serialcare_user`.
-- `DBPassword`: password de RDS. No subirlo a GitHub.
-- `InstanceType`: por defecto `t3.micro`.
-- `VpcCidr`: por defecto `10.30.0.0/16`.
-- `PublicSubnet1Cidr`: por defecto `10.30.1.0/24`.
-- `PublicSubnet2Cidr`: por defecto `10.30.2.0/24`.
-- `GitHubRepoUrl`: URL HTTPS del repositorio con este codigo.
-- `JwtSecret`: secreto JWT largo. No subirlo a GitHub.
-- `AzureStorageConnectionString`: entregado por el equipo/companero Azure. No subirlo a GitHub.
-- `AzureStorageContainer`: por defecto `evidencias`.
-- `AzureStoragePublicBaseUrl`: por ejemplo `https://cuenta.blob.core.windows.net`.
-
-`FRONTEND_URL` no es un parametro manual: CloudFormation lo genera como `http://<DNS del ALB>` dentro de `backend/.env`. La conexion generada a RDS termina en `?sslmode=no-verify`, lo que exige SSL sin validar la cadena del certificado para esta PoC de laboratorio. En produccion se debe instalar/configurar la CA de RDS y validar el certificado.
-
-
-## Repositorio privado
-
-Las EC2 App clonan el codigo desde `GitHubRepoUrl`. Si el repositorio es privado, la clonacion fallara a menos que configures autenticacion segura. Opciones aceptables:
-
-- Hacer el repositorio publico temporalmente durante la prueba academica.
-- Usar una deploy key configurada en GitHub y cargada de forma segura en la instancia.
-- Usar un token gestionado fuera del template, por ejemplo mediante AWS Secrets Manager o un mecanismo temporal seguro.
-
-No hardcodear tokens, passwords ni llaves privadas en `cloudformation-serialcare.yaml`, `UserData`, README ni commits.
-
-## Validar plantilla antes de desplegar
+Validar localmente:
 
 ```powershell
+cfn-lint infrastructure/cloudformation-serialcare.yaml
 aws cloudformation validate-template --template-body file://infrastructure/cloudformation-serialcare.yaml
 ```
 
-## Desplegar stack
+Desplegar desde la consola de CloudFormation o mediante CLI. Evite incluir `DBPassword`, `JwtSecret` o la cadena Azure en el historial del shell; use un archivo local no versionado o el formulario seguro de la consola.
 
-Ejemplo con parametros en linea. Para una entrega real, evita dejar secretos en el historial de consola y usa un archivo local no versionado o el asistente de CloudFormation.
+Ejemplo sin secretos:
 
 ```powershell
 aws cloudformation deploy `
   --template-file infrastructure/cloudformation-serialcare.yaml `
   --stack-name serialcare-cloud `
   --parameter-overrides `
-    KeyName=mi-keypair `
-    AllowedSSHIp=MI_IP_PUBLICA/32 `
+    GitHubRepoUrl=https://github.com/ORGANIZACION/serialcare-cloud.git `
+    RepositoryRef=evaluacion-4-devsecops `
     DBName=serialcare_db `
-    DBUsername=serialcare_user `
-    DBPassword=CAMBIAR_PASSWORD `
-    InstanceType=t3.micro `
-    GitHubRepoUrl=https://github.com/USUARIO/serialcare-cloud.git `
-    JwtSecret=CAMBIAR_SECRETO_LARGO `
-    AzureStorageConnectionString="" `
-    AzureStorageContainer=evidencias `
-    AzureStoragePublicBaseUrl=""
+    DBUsername=serialcare_user
 ```
 
-Al terminar, revisar outputs:
+El comando es deliberadamente incompleto: DBPassword, BootstrapAdminPassword, JwtSecret y otros secretos requeridos deben ingresarse mediante un canal seguro.
+
+Consultar outputs:
 
 ```powershell
-aws cloudformation describe-stacks --stack-name serialcare-cloud --query "Stacks[0].Outputs"
+aws cloudformation describe-stacks `
+  --stack-name serialcare-cloud `
+  --query "Stacks[0].Outputs"
 ```
 
-Outputs importantes:
+## Secuencia de arranque
 
-- `LoadBalancerUrl`
-- `HealthCheckUrl`
-- `BastionPublicIp`
-- `App1PrivateIp`
-- `App2PrivateIp`
-- `RdsEndpointAddress`
+`UserData`:
 
-## Inicializacion automatica de RDS
+1. Instala Docker, Git y curl desde los repositorios de Amazon Linux.
+2. Descarga Docker Compose v2.29.7 y verifica su SHA-256 con el archivo oficial.
+3. Clona el repositorio o hace avance rápido de una copia limpia a `RepositoryRef`; no borra el checkout ni sobrescribe cambios.
+4. Crea `/etc/serialcare/serialcare.env` con permisos `0600`.
+5. Genera un override que desactiva PostgreSQL local, retira puertos internos y publica únicamente el gateway en el puerto 80 de la EC2.
+6. Ejecuta `docker compose config`, construye las imágenes y ejecuta `up -d`.
+7. Verifica que `db:initialize` complete bootstrap y migraciones con código 0; luego espera `GET /health` del gateway.
 
-EC2 App 1 inicializa RDS durante su primer arranque. Espera a PostgreSQL con hasta 30 intentos, usa `postgres:16-alpine` para ejecutar `SELECT 1` y, cuando la conexion esta disponible, carga primero `database/schema.sql` y luego `database/seed.sql`.
+Los logs quedan en `/var/log/serialcare-bootstrap.log` y `/var/log/cloud-init-output.log`.
 
-El backend conserva `sslmode=no-verify` en `backend/.env`. Solo la URL temporal usada por `psql` cambia a `sslmode=require`. EC2 App 2 no ejecuta scripts SQL; unicamente levanta frontend y backend.
+## Base de datos y migraciones
 
-La salida queda en App 1:
+La plantilla no ejecuta `database/schema.sql`, `database/seed.sql` ni `psql`
+manual contra RDS. Tampoco elimina volúmenes o datos. RDS usa cifrado, red
+privada, snapshots al eliminar/reemplazar y acceso 5432 únicamente desde la
+EC2.
 
-```bash
-sudo tail -n 100 /var/log/serialcare-db-init.log
-sudo tail -n 100 /var/log/cloud-init-output.log
+El servicio one-shot `migrate` ejecuta `npm run db:initialize` bajo un bloqueo
+asesor de PostgreSQL:
+
+1. Si no existe ninguna tabla de aplicación, ejecuta `database/bootstrap.sql`
+   y `database/bootstrap-seed.sql` dentro de una transacción.
+2. Crea el ADMIN inicial con correo y contraseña recibidos desde parámetros
+   `NoEcho`; la contraseña se convierte a bcrypt y nunca se almacena en SQL.
+3. Crea `schema_migrations` y aplica 001–010 en orden, cada una en su propia
+   transacción.
+4. Si el esquema base ya existe, omite completamente el bootstrap y ejecuta
+   solo migraciones pendientes.
+5. Si detecta un esquema parcial o cualquier error, termina con código distinto
+   de cero; `depends_on: service_completed_successfully` impide iniciar los
+   cuatro módulos.
+
+`bootstrap.sql` es idempotente y no contiene `DROP TABLE` ni `TRUNCATE`. El
+`seed.sql` histórico continúa disponible solo como conjunto demostrativo y no
+participa del despliegue AWS.
+## Validación operativa
+
+Comprobar el acceso público:
+
+```text
+GET http://<LoadBalancerDnsName>/health
 ```
 
-En un stack nuevo no es necesario inicializar RDS manualmente.
+Respuesta esperada en texto plano:
 
-## Ingresar por Bastion
-
-En tu equipo local:
-
-```bash
-chmod 400 mi-keypair.pem
-ssh-add mi-keypair.pem
-ssh -A ec2-user@BASTION_PUBLIC_IP
+```text
+ok
 ```
 
-Si usas Windows PowerShell con OpenSSH:
-
-```powershell
-ssh-add .\mi-keypair.pem
-ssh -A ec2-user@BASTION_PUBLIC_IP
-```
-
-## Entrar a EC2 App desde Bastion
-
-Una vez dentro del Bastion:
-
-```bash
-ssh ec2-user@APP1_PRIVATE_IP
-ssh ec2-user@APP2_PRIVATE_IP
-```
-
-No se abre SSH directo desde internet hacia las EC2 App. Solo se permite desde el Security Group del Bastion.
-
-## Verificar Docker en cada EC2 App
+Comprobar servicios en la VM mediante el canal administrativo privado disponible:
 
 ```bash
 cd /opt/serialcare-cloud
-docker compose -f docker-compose.prod.yml ps
-docker ps
-docker compose -f docker-compose.prod.yml logs --tail=80 backend
-docker compose -f docker-compose.prod.yml logs --tail=80 frontend
+sudo docker compose \
+  --env-file /etc/serialcare/serialcare.env \
+  -f docker-compose.eval4.yml \
+  -f /etc/serialcare/docker-compose.aws.yml \
+  ps --all
+
+sudo docker compose \
+  --env-file /etc/serialcare/serialcare.env \
+  -f docker-compose.eval4.yml \
+  -f /etc/serialcare/docker-compose.aws.yml \
+  logs --tail=100 migrate
 ```
 
-## Probar Load Balancer
+Validar desde el gateway:
 
-Abre en el navegador el valor del output `LoadBalancerUrl`:
+- Login por `/api/auth/login`.
+- Clientes por `/api/clientes`.
+- Órdenes por `/api/ordenes`.
+- Garantías por `/api/garantias`.
+- Repuestos por `/api/repuestos`.
 
-```text
-http://LOAD_BALANCER_DNS
-```
+## Ansible
 
-Probar health check:
+CloudFormation crea la infraestructura. Cuando exista conectividad privada hacia la VM, Ansible instala Docker y despliega la misma arquitectura modular. Configure:
 
-```text
-http://LOAD_BALANCER_DNS/api/health
-```
+- `database_host` con el output `RdsEndpointAddress`.
+- `gateway_port: 80` cuando el ALB apunte al puerto 80.
+- `serialcare_frontend_url` con `LoadBalancerUrl`.
+- secretos con Ansible Vault.
 
-Respuesta esperada:
-
-```json
-{
-  "status": "ok",
-  "service": "serialcare-backend",
-  "database": "ok"
-}
-```
-
-## Probar caida de una instancia
-
-1. Entra a una de las EC2 App desde Bastion.
-2. Deten Docker en esa instancia:
-
-```bash
-sudo systemctl stop docker
-```
-
-3. En AWS, revisa el Target Group del ALB. Esa instancia deberia quedar `unhealthy`.
-4. Abre el sitio por el ALB. Debe seguir respondiendo desde la otra instancia.
-5. Recupera la instancia:
-
-```bash
-sudo systemctl start docker
-cd /opt/serialcare-cloud
-docker compose -f docker-compose.prod.yml up -d
-```
+Consulte [ansible/README.md](../ansible/README.md).
 
 ## Azure Blob Storage
 
-El companero/equipo Azure debe entregar:
+Azure puede quedar vacío para comprobar contenedores y healthchecks. La generación y descarga real de PDF y la subida de evidencias requieren credenciales válidas. Nunca guarde la cadena de conexión en Git, inventarios o parámetros sin `NoEcho`.
 
-```env
-AZURE_STORAGE_CONNECTION_STRING=...
-AZURE_STORAGE_CONTAINER=evidencias
-AZURE_STORAGE_PUBLIC_BASE_URL=https://cuenta.blob.core.windows.net
-```
+## Seguridad y limitaciones académicas
 
-Estas variables se pasan a `backend/.env` desde CloudFormation UserData. No deben subirse a GitHub.
-
-Si `AZURE_STORAGE_CONNECTION_STRING` queda vacia:
-
-- La app inicia normalmente.
-- Las evidencias manuales funcionan.
-- La subida real de archivos devuelve un error claro indicando que Azure Blob no esta configurado.
-
-## Seguridad aplicada
-
-- ALB permite HTTP 80 desde internet.
-- EC2 App permite HTTP 80 solo desde el Security Group del ALB.
-- Bastion permite SSH 22 solo desde `AllowedSSHIp`.
-- `AllowedSSHIp` debe identificar una unica IP publica con mascara `/32`.
-- EC2 App permite SSH 22 solo desde el Security Group del Bastion.
-- RDS permite PostgreSQL 5432 solo desde el Security Group de EC2 App.
-- RDS usa SSL con `sslmode=no-verify` para el laboratorio.
-- RDS no queda abierto a internet.
-- No se incluyen credenciales reales en el repositorio.
-
-## Notas y pendientes manuales
-
-- Configurar un `KeyName` existente antes de desplegar.
-- Usar `AllowedSSHIp` con `/32`. No usar `0.0.0.0/0`.
-- Configurar valores reales de Azure Blob cuando existan.
-- Para un despliegue nuevo, crea el stack con esta version de la plantilla y usa `LoadBalancerUrl`; no es necesario corregir el `.env` dentro de las EC2.
-- En un stack ya existente, actualizar solo el `UserData` no garantiza que cloud-init vuelva a ejecutarlo. Para aplicar estas correcciones de arranque, recrea el stack o reemplaza ambas EC2 App de forma controlada.
+- RDS y EBS están cifrados.
+- RDS y EC2 no tienen IP pública.
+- IMDSv2 es obligatorio.
+- El ALB es la única entrada pública.
+- Los secretos CloudFormation usan `NoEcho`; el archivo de entorno usa modo `0600`.
+- El egress HTTPS de la EC2 se conserva para repositorios, registro de imágenes y Azure; la excepción IaC es específica y documentada.
+- No hay dominio ni certificado ACM en AWS Academy. El listener HTTP y su excepción IaC se mantienen exclusivamente para la demostración académica. En un entorno real, agregue ACM, listener 443 y redirección 80 a 443.
+- La arquitectura académica usa una sola EC2 y no ofrece alta disponibilidad del cómputo.
+- La plantilla no abre SSH. La administración requiere un canal privado autorizado por el laboratorio; no agregue un Bastion público.

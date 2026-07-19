@@ -1,8 +1,10 @@
 # Despliegue Ansible de SerialCare Cloud
 
 Esta automatizacion prepara una VM Linux y despliega los cuatro modulos de la
-Evaluacion 4 con `docker-compose.eval4.yml`. No modifica firewall, no elimina
-volumenes y no copia claves SSH.
+Evaluacion 4 con `docker-compose.eval4.yml`. CloudFormation crea la
+infraestructura AWS; Ansible configura una VM alcanzable por un canal
+administrativo privado y aplica despliegues repetibles. No modifica firewall,
+no elimina volumenes y no copia claves SSH.
 
 ## Sistemas soportados
 
@@ -61,7 +63,11 @@ directorio de instalacion ni fuerza un checkout Git.
 | `serialcare_repo_version` | Rama, tag o commit a desplegar. |
 | `serialcare_install_dir` | Checkout del proyecto. |
 | `serialcare_config_dir` | Directorio externo y protegido para `.env` y override. |
-| `database_name`, `database_user`, `database_password` | PostgreSQL local de Compose. |
+| `database_name`, `database_user`, `database_password` | Credenciales PostgreSQL protegidas con Vault. |
+| `database_host` | Vacio usa PostgreSQL local; en AWS recibe `RdsEndpointAddress`. |
+| `database_port`, `database_sslmode` | Puerto y modo SSL de PostgreSQL externo. |
+| `bootstrap_admin_name`, `bootstrap_admin_email` | Identidad del ADMIN inicial para una base vacía. |
+| `bootstrap_admin_password` | Secreto inicial protegido mediante Ansible Vault y convertido a bcrypt por el migrador. |
 | `jwt_secret` | Firma JWT compartida por los cuatro modulos. |
 | `azure_storage_connection_string` | Conexion Azure; puede quedar vacia para pruebas locales. |
 | `azure_blob_container` | Contenedor PDF; por defecto `serialcare`. |
@@ -73,6 +79,25 @@ El PDF y las evidencias reales requieren `azure_storage_connection_string`.
 Con el valor vacio, los modulos y healthchecks funcionan, pero las operaciones
 que escriben en Azure responden con el error controlado de almacenamiento no
 configurado.
+
+## Integracion con AWS
+
+El flujo recomendado es:
+
+1. CloudFormation crea VPC, ALB, EC2 privada y RDS privado.
+2. El servicio `migrate` crea el esquema base seguro si RDS está vacía y luego
+   aplica migraciones; nunca ejecuta `schema.sql` ni `seed.sql`.
+3. En `group_vars/all.yml`, configure `database_host` con el output
+   `RdsEndpointAddress`, `gateway_port` con el puerto esperado por el ALB y
+   `serialcare_frontend_url` con `LoadBalancerUrl`.
+4. Ejecute el playbook desde un controlador con conectividad privada a la VM.
+5. El servicio one-shot `migrate` ejecuta `db:initialize`; en una base nueva
+   aplica bootstrap y migraciones, y en una existente solo migraciones pendientes.
+
+El override de Ansible deja PostgreSQL local disponible solo cuando
+`database_host` esta vacio. En AWS no publica 5432 ni 3001-3004. CloudFormation
+tambien puede realizar el bootstrap inicial; no ejecute simultaneamente
+`UserData` y Ansible como dos mecanismos de despliegue competidores.
 
 ## Instalacion de Docker
 
@@ -93,18 +118,20 @@ politicas SSH de la VM.
 2. Clona o actualiza exactamente `serialcare_repo_version` sin `force`.
 3. Genera `/etc/serialcare/.env` con permisos `0600`; la tarea usa `no_log`.
 4. Genera un override que elimina los puertos publicados de PostgreSQL y de
-   los modulos 3001-3004. Solo publica el gateway en `gateway_port`.
+   los modulos 3001-3004. Si `database_host` esta definido, desactiva el
+   PostgreSQL local y conecta migrador y modulos al RDS externo. Solo publica
+   el gateway en `gateway_port`.
 5. Valida Compose, ejecuta `pull` si fue habilitado y construye las imagenes.
-6. Ejecuta `compose up -d --wait`. El `depends_on` existente inicia primero
-   PostgreSQL, ejecuta una sola vez el servicio `migrate` y solo entonces
-   inicia los cuatro modulos y el gateway.
+6. Ejecuta `compose up -d --wait`. En local espera PostgreSQL; con RDS externo
+   lo omite. En ambos casos ejecuta una sola vez el servicio `migrate` y solo
+   entonces inicia los cuatro modulos y el gateway.
 7. Valida `/health` del gateway y, desde la red interna, `/health` y
    `/health/db` de los cuatro modulos.
 
-No se abren puertos con UFW, firewalld o reglas cloud. La VM debe permitir
-externamente solo SSH desde el origen administrativo autorizado y el puerto
-del gateway desde el origen requerido. TLS y el balanceador externo se
-gestionan fuera de este playbook.
+No se abren puertos con UFW, firewalld o reglas cloud. En AWS, la VM privada
+debe aceptar el gateway solo desde el Security Group del ALB; el controlador
+Ansible necesita un canal administrativo privado ya autorizado. TLS y el
+balanceador se gestionan fuera de este playbook.
 
 ## Idempotencia y limites del check mode
 

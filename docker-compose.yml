@@ -1,3 +1,4 @@
+# LEGACY (Evaluacion 3): entorno monolitico local. Para Evaluacion 4 use docker-compose.eval4.yml.
 services:
   postgres:
     image: postgres:16-alpine

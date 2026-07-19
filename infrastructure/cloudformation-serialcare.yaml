@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: SerialCare Cloud AWS infrastructure with a public ALB, two private Docker EC2 app nodes and private RDS PostgreSQL.
+Description: SerialCare Cloud Eval 4 infrastructure with a public ALB, one private modular Docker host and private RDS PostgreSQL.
 
 Parameters:
   DBName:
@@ -61,7 +61,33 @@ Parameters:
 
   GitHubRepoUrl:
     Type: String
-    Description: HTTPS URL of the SerialCare Cloud GitHub repository to clone on each app EC2.
+    Description: HTTPS URL of the SerialCare Cloud GitHub repository.
+
+  RepositoryRef:
+    Type: String
+    Description: Git branch deployed by the private application host.
+    Default: evaluacion-4-devsecops
+    AllowedPattern: "^[A-Za-z0-9._/-]+$"
+
+  BootstrapAdminName:
+    Type: String
+    Description: Display name for the initial ADMIN created only on an empty database.
+    Default: Administrador SerialCare
+    MinLength: 1
+    MaxLength: 120
+
+  BootstrapAdminEmail:
+    Type: String
+    Description: Email for the initial ADMIN created only on an empty database.
+    Default: admin@serialcare.cl
+    AllowedPattern: "^[^@ ]+@[^@ ]+[.][^@ ]+$"
+
+  BootstrapAdminPassword:
+    Type: String
+    Description: Password hashed by the one-shot initializer for the initial ADMIN.
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 72
 
   JwtSecret:
     Type: String
@@ -351,7 +377,7 @@ Resources:
             - Key: Name
               Value: serialcare-imdsv2-required
 
-  AppInstance1:
+  AppInstance:
     Type: AWS::EC2::Instance
     DependsOn:
       - PrivateDefaultRoute
@@ -372,133 +398,128 @@ Resources:
             VolumeType: gp3
       Tags:
         - Key: Name
-          Value: serialcare-app-1
+          Value: serialcare-eval4-app
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -eu
-          dnf update -y
-          dnf install -y docker git
+          set -euo pipefail
+          exec > >(tee -a /var/log/serialcare-bootstrap.log) 2>&1
+
+          COMPOSE_VERSION=v2.29.7
+          INSTALL_DIR=/opt/serialcare-cloud
+          ENV_FILE=/etc/serialcare/serialcare.env
+          OVERRIDE_FILE=/etc/serialcare/docker-compose.aws.yml
+
+          dnf install -y docker git curl
           systemctl enable --now docker
-          mkdir -p /usr/local/lib/docker/cli-plugins
+          install -d -m 0755 /usr/local/lib/docker/cli-plugins /etc/serialcare
+
           if ! docker compose version >/dev/null 2>&1; then
-            curl -SL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
-            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+            curl -fsSLo /tmp/docker-compose "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/docker-compose-linux-x86_64"
+            curl -fsSLo /tmp/docker-compose-checksums.txt "https://github.com/docker/compose/releases/download/$COMPOSE_VERSION/checksums.txt"
+            EXPECTED_SHA="$(awk '/docker-compose-linux-x86_64$/ {print $1}' /tmp/docker-compose-checksums.txt)"
+            ACTUAL_SHA="$(sha256sum /tmp/docker-compose | awk '{print $1}')"
+            test -n "$EXPECTED_SHA"
+            test "$EXPECTED_SHA" = "$ACTUAL_SHA"
+            install -m 0755 /tmp/docker-compose /usr/local/lib/docker/cli-plugins/docker-compose
+            rm -f /tmp/docker-compose /tmp/docker-compose-checksums.txt
           fi
-          rm -rf /opt/serialcare-cloud
-          git clone "${GitHubRepoUrl}" /opt/serialcare-cloud
-          cd /opt/serialcare-cloud
-          cat > backend/.env <<'ENVEOF'
-          PORT=3000
-          NODE_ENV=production
-          DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}?sslmode=no-verify
-          JWT_SECRET=${JwtSecret}
-          FRONTEND_URL=http://${SerialCareLoadBalancer.DNSName}
-          AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
-          AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
-          AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
-          ENVEOF
 
-          DB_INIT_LOG=/var/log/serialcare-db-init.log
-          touch "$DB_INIT_LOG"
-
-          initialize_database() {
-            echo "[SerialCare DB] Preparando inicializacion automatica."
-
-            DATABASE_URL="$(sed -n 's/^DATABASE_URL=//p' backend/.env)"
-            if [ -z "$DATABASE_URL" ]; then
-              echo "[SerialCare DB] ERROR: DATABASE_URL no existe en backend/.env."
-              return 1
-            fi
-
-            PSQL_DATABASE_URL="$(printf '%s' "$DATABASE_URL" | sed 's/sslmode=no-verify/sslmode=require/')"
-            if [ "$PSQL_DATABASE_URL" = "$DATABASE_URL" ]; then
-              echo "[SerialCare DB] ERROR: DATABASE_URL no contiene sslmode=no-verify."
-              return 1
-            fi
-
-            docker pull postgres:16-alpine || return 1
-
-            attempt=1
-            max_attempts=30
-            until docker run --rm postgres:16-alpine \
-              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 -c "SELECT 1;" >/dev/null 2>&1; do
-              if [ "$attempt" -ge "$max_attempts" ]; then
-                echo "[SerialCare DB] ERROR: PostgreSQL no estuvo disponible despues de $max_attempts intentos."
-                return 1
-              fi
-
-              echo "[SerialCare DB] PostgreSQL aun no disponible. Intento $attempt/$max_attempts; reintentando en 10 segundos."
-              attempt=$((attempt + 1))
-              sleep 10
-            done
-
-            echo "[SerialCare DB] PostgreSQL disponible. Ejecutando database/schema.sql."
-            docker run --rm -i postgres:16-alpine \
-              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 < database/schema.sql || return 1
-
-            echo "[SerialCare DB] Esquema cargado. Ejecutando database/seed.sql."
-            docker run --rm -i postgres:16-alpine \
-              psql "$PSQL_DATABASE_URL" -v ON_ERROR_STOP=1 < database/seed.sql || return 1
-          }
-
-          if initialize_database >>"$DB_INIT_LOG" 2>&1; then
-            echo "[SerialCare DB] Inicializacion completada correctamente." | tee -a "$DB_INIT_LOG"
-          else
-            echo "[SerialCare DB] ERROR: fallo la inicializacion. Revisa $DB_INIT_LOG y /var/log/cloud-init-output.log." | tee -a "$DB_INIT_LOG" >&2
+          if [ -d "$INSTALL_DIR/.git" ]; then
+            test -z "$(git -C "$INSTALL_DIR" status --porcelain)"
+            git -C "$INSTALL_DIR" fetch --prune origin
+            git -C "$INSTALL_DIR" checkout "${RepositoryRef}"
+            git -C "$INSTALL_DIR" merge --ff-only "origin/${RepositoryRef}"
+          elif [ -e "$INSTALL_DIR" ]; then
+            echo "ERROR: $INSTALL_DIR existe y no es un repositorio Git." >&2
             exit 1
+          else
+            git clone --branch "${RepositoryRef}" --single-branch "${GitHubRepoUrl}" "$INSTALL_DIR"
           fi
 
-          docker compose -f docker-compose.prod.yml up -d --build
-
-  AppInstance2:
-    Type: AWS::EC2::Instance
-    DependsOn:
-      - PrivateDefaultRoute
-    Properties:
-      ImageId: !Ref LatestAmiId
-      InstanceType: !Ref InstanceType
-      LaunchTemplate:
-        LaunchTemplateId: !Ref ImdsV2LaunchTemplate
-        Version: !GetAtt ImdsV2LaunchTemplate.LatestVersionNumber
-      SubnetId: !Ref PrivateSubnet2
-      SecurityGroupIds:
-        - !Ref AppSecurityGroup
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            DeleteOnTermination: true
-            Encrypted: true
-            VolumeType: gp3
-      Tags:
-        - Key: Name
-          Value: serialcare-app-2
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -eu
-          dnf update -y
-          dnf install -y docker git
-          systemctl enable --now docker
-          mkdir -p /usr/local/lib/docker/cli-plugins
-          if ! docker compose version >/dev/null 2>&1; then
-            curl -SL "https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64" -o /usr/local/lib/docker/cli-plugins/docker-compose
-            chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
-          fi
-          rm -rf /opt/serialcare-cloud
-          git clone "${GitHubRepoUrl}" /opt/serialcare-cloud
-          cd /opt/serialcare-cloud
-          cat > backend/.env <<'ENVEOF'
-          PORT=3000
+          umask 077
+          cat > "$ENV_FILE" <<'ENVEOF'
           NODE_ENV=production
+          POSTGRES_DB=${DBName}
+          POSTGRES_USER=${DBUsername}
+          POSTGRES_PASSWORD=${DBPassword}
           DATABASE_URL=postgresql://${DBUsername}:${DBPassword}@${SerialCareDB.Endpoint.Address}:5432/${DBName}?sslmode=no-verify
+          BOOTSTRAP_ADMIN_NAME=${BootstrapAdminName}
+          BOOTSTRAP_ADMIN_EMAIL=${BootstrapAdminEmail}
+          BOOTSTRAP_ADMIN_PASSWORD=${BootstrapAdminPassword}
+          BOOTSTRAP_ADMIN_PASSWORD_HASH=
           JWT_SECRET=${JwtSecret}
           FRONTEND_URL=http://${SerialCareLoadBalancer.DNSName}
           AZURE_STORAGE_CONNECTION_STRING=${AzureStorageConnectionString}
+          AZURE_BLOB_CONTAINER=${AzureStorageContainer}
           AZURE_STORAGE_CONTAINER=${AzureStorageContainer}
           AZURE_STORAGE_PUBLIC_BASE_URL=${AzureStoragePublicBaseUrl}
           ENVEOF
-          docker compose -f docker-compose.prod.yml up -d --build
+          chmod 0600 "$ENV_FILE"
+
+          cat > "$OVERRIDE_FILE" <<'COMPOSEEOF'
+          services:
+            postgres:
+              profiles: ["local-database"]
+              ports: !reset []
+            migrate:
+              environment:
+                DATABASE_URL: ${!DATABASE_URL}
+              depends_on: !reset {}
+            clientes-maquinas:
+              environment:
+                DATABASE_URL: ${!DATABASE_URL}
+              depends_on: !override
+                migrate:
+                  condition: service_completed_successfully
+              ports: !reset []
+            recepcion-cotizaciones:
+              environment:
+                DATABASE_URL: ${!DATABASE_URL}
+              depends_on: !override
+                migrate:
+                  condition: service_completed_successfully
+              ports: !reset []
+            diagnostico-garantias:
+              environment:
+                DATABASE_URL: ${!DATABASE_URL}
+              depends_on: !override
+                migrate:
+                  condition: service_completed_successfully
+              ports: !reset []
+            inventario-documentos:
+              environment:
+                DATABASE_URL: ${!DATABASE_URL}
+              depends_on: !override
+                migrate:
+                  condition: service_completed_successfully
+              ports: !reset []
+            frontend-gateway:
+              ports: !override
+                - "80:8080"
+          COMPOSEEOF
+          chmod 0644 "$OVERRIDE_FILE"
+
+          cd "$INSTALL_DIR"
+          COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.eval4.yml -f "$OVERRIDE_FILE")
+          "${!COMPOSE[@]}" config --quiet
+          "${!COMPOSE[@]}" build
+          "${!COMPOSE[@]}" up -d
+
+          MIGRATE_ID="$("${!COMPOSE[@]}" ps -aq migrate)"
+          test -n "$MIGRATE_ID"
+          test "$(docker inspect --format '{{.State.ExitCode}}' "$MIGRATE_ID")" = "0"
+
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1/health >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+
+          "${!COMPOSE[@]}" ps --all
+          echo "ERROR: el gateway no alcanzo estado saludable." >&2
+          exit 1
 
   # AWS Academy demonstration requires a public entry point and does not provide private client connectivity.
   #trivy:ignore:AVD-AWS-0053
@@ -532,7 +553,7 @@ Resources:
       HealthCheckEnabled: true
       HealthCheckProtocol: HTTP
       HealthCheckPort: traffic-port
-      HealthCheckPath: /api/health
+      HealthCheckPath: /health
       Matcher:
         HttpCode: "200"
       HealthyThresholdCount: 2
@@ -540,9 +561,7 @@ Resources:
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 5
       Targets:
-        - Id: !Ref AppInstance1
-          Port: 80
-        - Id: !Ref AppInstance2
+        - Id: !Ref AppInstance
           Port: 80
       Tags:
         - Key: Name
@@ -570,16 +589,16 @@ Outputs:
     Value: !Sub "http://${SerialCareLoadBalancer.DNSName}"
 
   HealthCheckUrl:
-    Description: Public backend health check URL through the ALB.
-    Value: !Sub "http://${SerialCareLoadBalancer.DNSName}/api/health"
+    Description: Public gateway health check URL through the ALB.
+    Value: !Sub "http://${SerialCareLoadBalancer.DNSName}/health"
 
-  App1PrivateIp:
-    Description: Private IP address of App EC2 instance 1.
-    Value: !GetAtt AppInstance1.PrivateIp
+  AppPrivateIp:
+    Description: Private IP address of the modular application host.
+    Value: !GetAtt AppInstance.PrivateIp
 
-  App2PrivateIp:
-    Description: Private IP address of App EC2 instance 2.
-    Value: !GetAtt AppInstance2.PrivateIp
+  AppInstanceId:
+    Description: EC2 instance ID of the private modular application host.
+    Value: !Ref AppInstance
 
   RdsEndpointAddress:
     Description: RDS PostgreSQL endpoint address.
