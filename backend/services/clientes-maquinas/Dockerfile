@@ -5,7 +5,9 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --global npm@11.18.0 \
+  && npm ci --omit=dev \
+  && npm cache clean --force
 
 COPY --chown=node:node src ./src
 
