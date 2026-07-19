@@ -1,0 +1,17 @@
+services:
+  postgres:
+    ports: !reset []
+  clientes-maquinas:
+    ports: !reset []
+  recepcion-cotizaciones:
+    ports: !reset []
+  diagnostico-garantias:
+    ports: !reset []
+  inventario-documentos:
+    ports: !reset []
+  frontend-gateway:
+    ports: !override
+      - target: 8080
+        published: "{{ gateway_port }}"
+        protocol: tcp
+        mode: host

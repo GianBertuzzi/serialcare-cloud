@@ -1,0 +1,2 @@
+[serialcare]
+servidor ansible_host=IP_PUBLICA ansible_user=USUARIO_SSH

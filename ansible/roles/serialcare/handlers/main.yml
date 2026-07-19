@@ -1,0 +1,24 @@
+---
+- name: Desplegar SerialCare Cloud
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - up
+      - -d
+      - --wait
+      - --wait-timeout
+      - "{{ serialcare_health_timeout }}"
+  register: serialcare_compose_up
+  changed_when: >-
+    'Created' in (serialcare_compose_up.stdout + serialcare_compose_up.stderr) or
+    'Recreated' in (serialcare_compose_up.stdout + serialcare_compose_up.stderr) or
+    'Started' in (serialcare_compose_up.stdout + serialcare_compose_up.stderr)

@@ -1,0 +1,21 @@
+---
+- name: Preparar y desplegar SerialCare Cloud
+  hosts: serialcare
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Validar sistema operativo compatible
+      ansible.builtin.assert:
+        that:
+          - >-
+            (ansible_distribution == 'Ubuntu' and
+             ansible_distribution_major_version in ['22', '24']) or
+            (ansible_distribution == 'Rocky' and
+             ansible_distribution_major_version == '9')
+        fail_msg: >-
+          Sistema no soportado. Use Ubuntu 22.04/24.04 o Rocky Linux 9.
+
+  roles:
+    - role: docker
+    - role: serialcare

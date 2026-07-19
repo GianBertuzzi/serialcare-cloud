@@ -1,0 +1,306 @@
+---
+- name: Definir rutas del despliegue
+  ansible.builtin.set_fact:
+    serialcare_env_file: "{{ serialcare_config_dir }}/.env"
+    serialcare_compose_file: "{{ serialcare_install_dir }}/docker-compose.eval4.yml"
+    serialcare_compose_override: "{{ serialcare_config_dir }}/docker-compose.deploy.yml"
+
+- name: Validar variables generales de despliegue
+  ansible.builtin.assert:
+    that:
+      - serialcare_repo_url | length > 10
+      - "'ORGANIZACION' not in serialcare_repo_url"
+      - serialcare_repo_version | length > 0
+      - serialcare_install_dir is match('^/[^/].*')
+      - serialcare_config_dir is match('^/[^/].*')
+      - database_name is match('^[A-Za-z][A-Za-z0-9_]{1,62}$')
+      - database_user is match('^[A-Za-z][A-Za-z0-9_]{0,62}$')
+      - azure_blob_container | default('serialcare') | length > 2
+      - gateway_port | int >= 1024
+      - gateway_port | int <= 65535
+      - serialcare_frontend_url | length > 7
+      - "'IP_PUBLICA' not in serialcare_frontend_url"
+    fail_msg: Revise las variables no secretas de group_vars/all.yml.
+
+- name: Validar secretos requeridos
+  ansible.builtin.assert:
+    that:
+      - database_password | length >= 12
+      - "'CAMBIAR' not in database_password"
+      - database_password is match('^[A-Za-z0-9_+=,.@%:/;-]+$')
+      - jwt_secret | length >= 32
+      - "'CAMBIAR' not in jwt_secret"
+      - jwt_secret is match('^[A-Za-z0-9_+=,.@%:/;-]+$')
+    fail_msg: Defina database_password y jwt_secret mediante Ansible Vault.
+  no_log: true
+
+- name: Crear directorio de instalacion
+  ansible.builtin.file:
+    path: "{{ serialcare_install_dir }}"
+    state: directory
+    owner: "{{ serialcare_deploy_user }}"
+    group: docker
+    mode: "0750"
+
+- name: Detectar checkout Git existente
+  ansible.builtin.stat:
+    path: "{{ serialcare_install_dir }}/.git"
+  register: serialcare_git_directory
+
+- name: Revisar cambios locales del checkout
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ serialcare_install_dir }}"
+      - status
+      - --porcelain
+      - --untracked-files=normal
+  register: serialcare_git_status
+  changed_when: false
+  when: serialcare_git_directory.stat.exists
+
+- name: Detener actualizacion si existen cambios locales
+  ansible.builtin.fail:
+    msg: >-
+      El checkout contiene cambios locales. Resuelvalos antes de volver a desplegar;
+      Ansible no los sobrescribira.
+  when:
+    - serialcare_git_directory.stat.exists
+    - serialcare_git_status.stdout | length > 0
+
+- name: Revisar directorio sin checkout Git
+  ansible.builtin.find:
+    paths: "{{ serialcare_install_dir }}"
+    hidden: true
+    recurse: false
+    file_type: any
+  register: serialcare_install_contents
+  when: not serialcare_git_directory.stat.exists
+
+- name: Detener clonacion sobre un directorio no vacio
+  ansible.builtin.fail:
+    msg: >-
+      El directorio de instalacion no esta vacio y no contiene un checkout Git.
+      Revise su contenido manualmente.
+  when:
+    - not serialcare_git_directory.stat.exists
+    - serialcare_install_contents.matched | int > 0
+
+- name: Clonar o actualizar SerialCare Cloud sin forzar cambios locales
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.git:
+    repo: "{{ serialcare_repo_url }}"
+    dest: "{{ serialcare_install_dir }}"
+    version: "{{ serialcare_repo_version }}"
+    update: true
+    force: false
+    recursive: false
+
+- name: Crear directorio protegido de configuracion
+  ansible.builtin.file:
+    path: "{{ serialcare_config_dir }}"
+    state: directory
+    owner: "{{ serialcare_deploy_user }}"
+    group: docker
+    mode: "0750"
+
+- name: Crear archivo de entorno protegido
+  ansible.builtin.template:
+    src: serialcare.env.j2
+    dest: "{{ serialcare_env_file }}"
+    owner: "{{ serialcare_deploy_user }}"
+    group: docker
+    mode: "0600"
+  no_log: true
+
+- name: Crear override que publica solamente el gateway
+  ansible.builtin.template:
+    src: docker-compose.deploy.yml.j2
+    dest: "{{ serialcare_compose_override }}"
+    owner: "{{ serialcare_deploy_user }}"
+    group: docker
+    mode: "0640"
+
+- name: Validar configuracion efectiva de Docker Compose
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - config
+      - --quiet
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Descargar imagenes publicadas cuando corresponda
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - pull
+      - --ignore-buildable
+      - --ignore-pull-failures
+  changed_when: false
+  when:
+    - serialcare_pull_images | bool
+    - not ansible_check_mode
+
+- name: Construir las imagenes de los cuatro modulos y el gateway
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - build
+  changed_when: true
+  notify: Desplegar SerialCare Cloud
+  when: not ansible_check_mode
+
+- name: Aplicar despliegue antes de validar salud
+  ansible.builtin.meta: flush_handlers
+
+- name: Esperar healthcheck del gateway
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ gateway_port }}/health"
+    method: GET
+    status_code: 200
+    return_content: false
+  register: serialcare_gateway_health
+  retries: "{{ serialcare_health_retries }}"
+  delay: "{{ serialcare_health_delay }}"
+  until: serialcare_gateway_health.status == 200
+  when: not ansible_check_mode
+
+- name: Validar health interno de los cuatro modulos
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - exec
+      - -T
+      - frontend-gateway
+      - wget
+      - --quiet
+      - --output-document=-
+      - "http://{{ item.name }}:{{ item.port }}/health"
+  loop:
+    - name: clientes-maquinas
+      port: 3001
+    - name: recepcion-cotizaciones
+      port: 3002
+    - name: diagnostico-garantias
+      port: 3003
+    - name: inventario-documentos
+      port: 3004
+  register: serialcare_module_health
+  changed_when: false
+  retries: "{{ serialcare_health_retries }}"
+  delay: "{{ serialcare_health_delay }}"
+  until: serialcare_module_health.rc == 0
+  when: not ansible_check_mode
+
+- name: Validar acceso PostgreSQL de los cuatro modulos
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - exec
+      - -T
+      - frontend-gateway
+      - wget
+      - --quiet
+      - --output-document=-
+      - "http://{{ item.name }}:{{ item.port }}/health/db"
+  loop:
+    - name: clientes-maquinas
+      port: 3001
+    - name: recepcion-cotizaciones
+      port: 3002
+    - name: diagnostico-garantias
+      port: 3003
+    - name: inventario-documentos
+      port: 3004
+  register: serialcare_module_database_health
+  changed_when: false
+  retries: "{{ serialcare_health_retries }}"
+  delay: "{{ serialcare_health_delay }}"
+  until: serialcare_module_database_health.rc == 0
+  when: not ansible_check_mode
+
+- name: Obtener estado final de los servicios
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --env-file
+      - "{{ serialcare_env_file }}"
+      - -f
+      - "{{ serialcare_compose_file }}"
+      - -f
+      - "{{ serialcare_compose_override }}"
+      - ps
+      - --services
+      - --status
+      - running
+  register: serialcare_compose_status
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Mostrar resumen no sensible
+  ansible.builtin.debug:
+    msg:
+      - "SerialCare Cloud desplegado desde {{ serialcare_repo_version }}."
+      - "Gateway: http://{{ ansible_host | default(inventory_hostname) }}:{{ gateway_port }}"
+      - "Servicios en ejecucion: {{ serialcare_compose_status.stdout_lines | length }}."
+      - "Healthchecks de gateway, modulos y PostgreSQL verificados."
+  when: not ansible_check_mode
+
+- name: Informar resultado de dry-run
+  ansible.builtin.debug:
+    msg: >-
+      Dry-run completado. Las operaciones Docker y los healthchecks se omiten en check mode.
+  when: ansible_check_mode

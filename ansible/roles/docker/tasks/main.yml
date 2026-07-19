@@ -1,0 +1,149 @@
+---
+- name: Determinar arquitectura para el repositorio APT de Docker
+  ansible.builtin.set_fact:
+    docker_apt_architecture: >-
+      {{ {'x86_64': 'amd64', 'aarch64': 'arm64', 'armv7l': 'armhf'}
+         .get(ansible_architecture, ansible_architecture) }}
+  when: ansible_os_family == "Debian"
+
+- name: Instalar Docker desde el repositorio oficial en Ubuntu
+  when: ansible_distribution == "Ubuntu"
+  block:
+    - name: Instalar prerrequisitos APT y Git
+      ansible.builtin.apt:
+        name:
+          - ca-certificates
+          - git
+          - gnupg
+          - python3-debian
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Crear directorio de llaves APT
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Instalar llave publica oficial de Docker
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        owner: root
+        group: root
+        mode: "0644"
+        force: false
+
+    - name: Configurar repositorio APT oficial de Docker
+      ansible.builtin.deb822_repository:
+        name: docker
+        types:
+          - deb
+        uris:
+          - https://download.docker.com/linux/ubuntu
+        suites:
+          - "{{ ansible_distribution_release }}"
+        components:
+          - stable
+        architectures:
+          - "{{ docker_apt_architecture }}"
+        signed_by: /etc/apt/keyrings/docker.asc
+        state: present
+
+    - name: Instalar Docker Engine y Compose plugin en Ubuntu
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+- name: Instalar Docker desde el repositorio oficial en Rocky Linux
+  when: ansible_distribution == "Rocky"
+  block:
+    - name: Instalar prerrequisitos DNF y Git
+      ansible.builtin.dnf:
+        name:
+          - ca-certificates
+          - dnf-plugins-core
+          - git
+        state: present
+
+    - name: Importar llave publica oficial de Docker
+      ansible.builtin.rpm_key:
+        key: https://download.docker.com/linux/centos/gpg
+        state: present
+
+    - name: Configurar repositorio RPM oficial de Docker
+      ansible.builtin.yum_repository:
+        name: docker-ce-stable
+        description: Docker CE Stable - $basearch
+        baseurl: https://download.docker.com/linux/centos/$releasever/$basearch/stable
+        enabled: true
+        gpgcheck: true
+        gpgkey: https://download.docker.com/linux/centos/gpg
+        state: present
+
+    - name: Instalar Docker Engine y Compose plugin en Rocky Linux
+      ansible.builtin.dnf:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+- name: Asegurar grupo docker
+  ansible.builtin.group:
+    name: docker
+    state: present
+
+- name: Habilitar e iniciar Docker
+  ansible.builtin.service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Agregar usuario de despliegue al grupo docker
+  ansible.builtin.user:
+    name: "{{ serialcare_deploy_user }}"
+    groups: docker
+    append: true
+  register: docker_group_membership
+
+- name: Renovar conexion para aplicar membresia del grupo docker
+  ansible.builtin.meta: reset_connection
+  when:
+    - docker_group_membership is changed
+    - not ansible_check_mode
+
+- name: Consultar version de Docker Compose
+  become: true
+  become_user: "{{ serialcare_deploy_user }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - version
+      - --short
+  register: docker_compose_version
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Validar version minima de Docker Compose
+  ansible.builtin.assert:
+    that:
+      - >-
+        (docker_compose_version.stdout | regex_replace('^v', ''))
+        is version('2.24.4', '>=')
+    fail_msg: >-
+      Docker Compose 2.24.4 o superior es necesario para el override seguro de puertos.
+  when: not ansible_check_mode

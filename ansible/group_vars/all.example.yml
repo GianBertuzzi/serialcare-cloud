@@ -1,0 +1,27 @@
+---
+# Copie este archivo como group_vars/all.yml y cifre los secretos con
+# ansible-vault antes de usarlo fuera de una demostracion local.
+serialcare_repo_url: "https://github.com/ORGANIZACION/serialcare-cloud.git"
+serialcare_repo_version: "evaluacion-4-devsecops"
+serialcare_install_dir: "/opt/serialcare-cloud"
+serialcare_config_dir: "/etc/serialcare"
+serialcare_deploy_user: "{{ ansible_user }}"
+
+database_name: "serialcare_db"
+database_user: "serialcare_user"
+database_password: "CAMBIAR_CON_ANSIBLE_VAULT"
+jwt_secret: "CAMBIAR_CON_ANSIBLE_VAULT_MINIMO_32_CARACTERES"
+
+# Puede permanecer vacio para validar el stack local. La generacion de PDF y
+# la subida real de evidencias requieren una cadena valida de Azure Storage.
+azure_storage_connection_string: ""
+azure_blob_container: "serialcare"
+
+gateway_port: 8080
+serialcare_frontend_url: "http://IP_PUBLICA:8080"
+
+# Active solo cuando las imagenes desplegadas procedan de un registro.
+serialcare_pull_images: false
+serialcare_health_retries: 30
+serialcare_health_delay: 5
+serialcare_health_timeout: 300
