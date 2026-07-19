@@ -1,0 +1,424 @@
+name: DevSecOps Evaluacion 4
+
+on:
+  push:
+    branches:
+      - main
+      - evaluacion-4-devsecops
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  SEMGREP_VERSION: "1.164.0"
+  TRIVY_VERSION: "0.70.0"
+  TRIVY_SHA256: "8b4376d5d6befe5c24d503f10ff136d9e0c49f9127a4279fd110b727929a5aa9"
+  GITLEAKS_IMAGE: "ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+
+jobs:
+  module_ci:
+    name: Modulo / ${{ matrix.module }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: clientes-maquinas
+            dockerfile: backend/services/clientes-maquinas/Dockerfile
+            image: serialcare-eval4-clientes-maquinas
+            server: backend/src/apps/clientesMaquinas.server.js
+          - module: recepcion-cotizaciones
+            dockerfile: backend/services/recepcion-cotizaciones/Dockerfile
+            image: serialcare-eval4-recepcion-cotizaciones
+            server: backend/src/apps/recepcionCotizaciones.server.js
+          - module: diagnostico-garantias
+            dockerfile: backend/services/diagnostico-garantias/Dockerfile
+            image: serialcare-eval4-diagnostico-garantias
+            server: backend/src/apps/diagnosticoGarantias.server.js
+          - module: inventario-documentos
+            dockerfile: backend/services/inventario-documentos/Dockerfile
+            image: serialcare-eval4-inventario-documentos
+            server: backend/src/apps/inventarioDocumentos.server.js
+
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v4.2.2
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Instalar dependencias backend
+        working-directory: backend
+        run: npm ci
+
+      - name: Validar punto de entrada
+        run: node --check "${{ matrix.server }}"
+
+      - name: Ejecutar pruebas backend
+        working-directory: backend
+        run: npm test
+
+      - name: Construir imagen del modulo
+        run: >-
+          docker build
+          --file "${{ matrix.dockerfile }}"
+          --tag "${{ matrix.image }}:ci-${{ github.sha }}"
+          backend
+
+      - name: Instalar Trivy verificado
+        shell: bash
+        run: |
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/${archive}" "${url}"
+          echo "${TRIVY_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/trivy-bin"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/trivy-bin" trivy
+          echo "${RUNNER_TEMP}/trivy-bin" >> "${GITHUB_PATH}"
+
+      - name: Escanear imagen con Trivy
+        shell: bash
+        run: |
+          mkdir -p reports/image
+          trivy image \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output "reports/image/${{ matrix.module }}.json" \
+            "${{ matrix.image }}:ci-${{ github.sha }}"
+
+      - name: Subir reporte de imagen
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: image-scan-${{ matrix.module }}
+          path: reports/image/${{ matrix.module }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Aplicar politica HIGH y CRITICAL de imagen
+        shell: bash
+        run: |
+          findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' "reports/image/${{ matrix.module }}.json")
+          echo "Hallazgos HIGH/CRITICAL para ${{ matrix.module }}: ${findings}"
+          if [[ "${findings}" -gt 0 ]]; then
+            exit 1
+          fi
+
+      - name: Registrar estado del modulo
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p module-status
+          printf '%s\n' "${{ job.status }}" > "module-status/${{ matrix.module }}.txt"
+
+      - name: Subir estado del modulo
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: module-status-${{ matrix.module }}
+          path: module-status/${{ matrix.module }}.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  sast:
+    name: SAST / Semgrep
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v4.2.2
+
+      - name: Instalar Semgrep CE
+        run: pipx install "semgrep==${SEMGREP_VERSION}"
+
+      - name: Analizar backend/src
+        run: |
+          mkdir -p reports/sast
+          semgrep scan \
+            --config p/ci \
+            --metrics off \
+            --json \
+            --output reports/sast/semgrep.json \
+            backend/src
+
+      - name: Subir reporte SAST
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: sast-report
+          path: reports/sast/semgrep.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Aplicar politica SAST
+        run: |
+          findings=$(jq '[.results[]? | select(.extra.severity == "ERROR")] | length' reports/sast/semgrep.json)
+          echo "Hallazgos Semgrep ERROR: ${findings}"
+          if [[ "${findings}" -gt 0 ]]; then
+            exit 1
+          fi
+
+  sca:
+    name: SCA / npm audit y Trivy filesystem
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v4.2.2
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Instalar dependencias backend
+        working-directory: backend
+        run: npm ci
+
+      - name: Ejecutar npm audit
+        id: npm_audit
+        working-directory: backend
+        shell: bash
+        run: |
+          mkdir -p ../reports/sca
+          set +e
+          npm audit --audit-level=high --json > ../reports/sca/npm-audit.json
+          status=$?
+          set -e
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+
+      - name: Instalar Trivy verificado
+        shell: bash
+        run: |
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/${archive}" "${url}"
+          echo "${TRIVY_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/trivy-bin"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/trivy-bin" trivy
+          echo "${RUNNER_TEMP}/trivy-bin" >> "${GITHUB_PATH}"
+
+      - name: Analizar dependencias con Trivy filesystem
+        run: |
+          trivy filesystem \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output reports/sca/trivy-filesystem.json \
+            backend
+
+      - name: Subir reporte SCA
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: sca-report
+          path: reports/sca
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Aplicar politica SCA
+        shell: bash
+        run: |
+          trivy_findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' reports/sca/trivy-filesystem.json)
+          echo "Hallazgos Trivy filesystem HIGH/CRITICAL: ${trivy_findings}"
+          echo "Exit code npm audit: ${{ steps.npm_audit.outputs.status }}"
+          if [[ "${{ steps.npm_audit.outputs.status }}" != "0" || "${trivy_findings}" -gt 0 ]]; then
+            exit 1
+          fi
+
+  secret_scan:
+    name: Secret Scanning / Gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Obtener historial completo
+        uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Analizar historial y contenido actual
+        id: gitleaks
+        shell: bash
+        run: |
+          mkdir -p reports/secrets
+          set +e
+          docker run --rm \
+            --volume "${PWD}:/repo" \
+            "${GITLEAKS_IMAGE}" git \
+            --config /repo/security/gitleaks.toml \
+            --redact \
+            --report-format sarif \
+            --report-path /repo/reports/secrets/gitleaks-history.sarif \
+            --exit-code 1 \
+            /repo
+          history_status=$?
+          docker run --rm \
+            --volume "${PWD}:/repo" \
+            "${GITLEAKS_IMAGE}" dir \
+            --config /repo/security/gitleaks.toml \
+            --redact \
+            --report-format sarif \
+            --report-path /repo/reports/secrets/gitleaks-current.sarif \
+            --exit-code 1 \
+            /repo
+          current_status=$?
+          set -e
+          echo "history_status=${history_status}" >> "${GITHUB_OUTPUT}"
+          echo "current_status=${current_status}" >> "${GITHUB_OUTPUT}"
+
+      - name: Subir reporte de secretos
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: secret-scan-report
+          path: reports/secrets
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Aplicar politica de secretos
+        run: |
+          echo "Exit code historial: ${{ steps.gitleaks.outputs.history_status }}"
+          echo "Exit code contenido actual: ${{ steps.gitleaks.outputs.current_status }}"
+          if [[ "${{ steps.gitleaks.outputs.history_status }}" != "0" || "${{ steps.gitleaks.outputs.current_status }}" != "0" ]]; then
+            exit 1
+          fi
+
+  iac:
+    name: IaC / Trivy config
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Obtener codigo
+        uses: actions/checkout@v4.2.2
+
+      - name: Instalar Trivy verificado
+        shell: bash
+        run: |
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/${archive}" "${url}"
+          echo "${TRIVY_SHA256}  ${RUNNER_TEMP}/${archive}" | sha256sum --check --strict
+          mkdir -p "${RUNNER_TEMP}/trivy-bin"
+          tar -xzf "${RUNNER_TEMP}/${archive}" -C "${RUNNER_TEMP}/trivy-bin" trivy
+          echo "${RUNNER_TEMP}/trivy-bin" >> "${GITHUB_PATH}"
+
+      - name: Preparar alcance IaC
+        shell: bash
+        run: |
+          scan_root="${RUNNER_TEMP}/serialcare-iac"
+          mkdir -p "${scan_root}/backend" "${scan_root}/frontend" "${scan_root}/infrastructure"
+          cp -R backend/services "${scan_root}/backend/services"
+          cp docker-compose.eval4.yml "${scan_root}/docker-compose.eval4.yml"
+          cp frontend/Dockerfile frontend/nginx.conf "${scan_root}/frontend/"
+          cp infrastructure/cloudformation-serialcare.yaml "${scan_root}/infrastructure/"
+          echo "IAC_SCAN_ROOT=${scan_root}" >> "${GITHUB_ENV}"
+
+      - name: Analizar Docker, Compose y CloudFormation
+        run: |
+          mkdir -p reports/iac
+          trivy config \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output reports/iac/trivy-config.json \
+            "${IAC_SCAN_ROOT}"
+
+      - name: Subir reporte IaC
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: iac-report
+          path: reports/iac/trivy-config.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Aplicar politica IaC
+        run: |
+          findings=$(jq '[.Results[]?.Misconfigurations[]? | select(.Status == "FAIL")] | length' reports/iac/trivy-config.json)
+          echo "Hallazgos IaC HIGH/CRITICAL: ${findings}"
+          if [[ "${findings}" -gt 0 ]]; then
+            exit 1
+          fi
+
+  summary:
+    name: Resumen obligatorio
+    if: always()
+    needs:
+      - module_ci
+      - sast
+      - sca
+      - secret_scan
+      - iac
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Descargar estados de modulos
+        if: always()
+        uses: actions/download-artifact@v4.1.8
+        with:
+          pattern: module-status-*
+          path: module-status
+          merge-multiple: true
+
+      - name: Publicar resumen y aplicar resultado global
+        if: always()
+        shell: bash
+        run: |
+          failed=0
+          {
+            echo "## Evaluacion 4 - Resumen DevSecOps"
+            echo
+            echo "### Estado por modulo"
+            echo "| Modulo | Estado |"
+            echo "|---|---|"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          for module in clientes-maquinas recepcion-cotizaciones diagnostico-garantias inventario-documentos; do
+            status_file=$(find module-status -name "${module}.txt" -print -quit 2>/dev/null || true)
+            if [[ -n "${status_file}" ]]; then
+              status=$(cat "${status_file}")
+            else
+              status="missing"
+            fi
+            echo "| ${module} | ${status} |" >> "${GITHUB_STEP_SUMMARY}"
+            if [[ "${status}" != "success" ]]; then
+              failed=1
+            fi
+          done
+
+          {
+            echo
+            echo "### Controles compartidos"
+            echo "| Control | Estado |"
+            echo "|---|---|"
+            echo "| SAST / Semgrep | ${{ needs.sast.result }} |"
+            echo "| SCA / npm audit + Trivy filesystem | ${{ needs.sca.result }} |"
+            echo "| Secret Scanning / Gitleaks | ${{ needs.secret_scan.result }} |"
+            echo "| IaC / Trivy config | ${{ needs.iac.result }} |"
+            echo "| Matriz de imagenes | ${{ needs.module_ci.result }} |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          for result in \
+            "${{ needs.module_ci.result }}" \
+            "${{ needs.sast.result }}" \
+            "${{ needs.sca.result }}" \
+            "${{ needs.secret_scan.result }}" \
+            "${{ needs.iac.result }}"; do
+            if [[ "${result}" != "success" ]]; then
+              failed=1
+            fi
+          done
+
+          exit "${failed}"

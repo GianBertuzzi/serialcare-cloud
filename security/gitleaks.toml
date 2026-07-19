@@ -1,0 +1,18 @@
+title = "SerialCare Cloud - Gitleaks"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholders locales y credenciales demo documentadas"
+regexTarget = "match"
+regexes = [
+  '''(?i)\bserialcare_pass\b''',
+  '''(?i)\bcambiar_este_secreto(?:_en_nube)?\b''',
+  '''(?i)\bsecreto_largo_y_unico\b''',
+  '''(?i)\bCAMBIAR_PASSWORD\b''',
+  '''(?i)\bCAMBIAR_SECRETO_LARGO\b''',
+  '''\bAdmin123\b''',
+  '''\bTecnico123\b''',
+  '''postgresql://usuario:password@'''
+]
