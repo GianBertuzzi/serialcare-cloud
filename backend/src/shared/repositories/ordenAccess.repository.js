@@ -308,6 +308,11 @@ async function getOrdenTrabajoEditable(client, idOrden, usuario) {
   if (usuario.rol === "TECNICO" && Number(orden.id_responsable) !== Number(usuario.id_usuario)) {
     return { status: 404, error: "Orden no encontrada para el tecnico" };
   }
+  const tipoOrden = String(orden.tipo_orden || orden.tipo_atencion || "").trim().toUpperCase();
+
+  if (tipoOrden === "PUESTA_EN_MARCHA") {
+    return { status: 409, error: "PUESTA_EN_MARCHA no admite repuestos, mano de obra ni borrador de cotizacion" };
+  }
 
   const cotizacionResult = await client.query(
     `SELECT id_cotizacion, estado, version, cerrada, pdf_estado

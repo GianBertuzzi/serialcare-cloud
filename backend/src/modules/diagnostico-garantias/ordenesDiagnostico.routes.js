@@ -143,9 +143,6 @@ router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res
     return res.status(400).json({ error: "Solo se permite modificar diagnostico, informe_tecnico, observaciones_tecnicas y mano_obra" });
   }
 
-  if (!diagnostico) {
-    return res.status(400).json({ error: "diagnostico es obligatorio" });
-  }
 
   if (manoObra === null) {
     return res.status(400).json({ error: "mano_obra debe ser numero mayor o igual a 0" });
@@ -163,7 +160,7 @@ router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res
     }
 
     const ordenResult = await client.query(
-      `SELECT id_orden, estado, id_responsable
+      `SELECT id_orden, estado, id_responsable, tipo_orden, tipo_atencion
       FROM ordenes_servicio
       WHERE id_orden = $1
         AND id_sucursal = $2
@@ -191,6 +188,21 @@ router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res
       return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
     }
 
+    const tipoOrden = normalizeTipoAtencion(ordenActual.tipo_orden || ordenActual.tipo_atencion);
+
+    if (tipoOrden !== "PUESTA_EN_MARCHA" && !diagnostico) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "diagnostico es obligatorio" });
+    }
+
+    if (tipoOrden === "PUESTA_EN_MARCHA" && !diagnostico && !informeTecnico) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Debe registrar al menos una comprobacion u observacion tecnica" });
+    }
+
+    const diagnosticoPersistido = diagnostico
+      || (tipoOrden === "PUESTA_EN_MARCHA" ? "No aplica para puesta en marcha" : null);
+
     const borradorFinalizadoResult = await client.query(
       `SELECT EXISTS (
         SELECT 1
@@ -213,7 +225,7 @@ router.put("/:id/diagnostico", verificarRol("ADMIN", "TECNICO"), async (req, res
           version = version + 1
       WHERE id_orden = $4
         AND id_sucursal = $5`,
-      [diagnostico, informeTecnico, manoObra, idOrden, usuarioSucursal.id_sucursal]
+      [diagnosticoPersistido, informeTecnico, manoObra, idOrden, usuarioSucursal.id_sucursal]
     );
 
     await client.query(
@@ -736,6 +748,111 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
   }
 });
 
+router.post("/:id/finalizar-puesta-en-marcha", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      throw Object.assign(new Error("Usuario no tiene sucursal asignada"), { status: 400 });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT id_orden, id_responsable, tipo_orden, tipo_atencion, estado, version
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      throw Object.assign(new Error("Orden no encontrada"), { status: 404 });
+    }
+
+    const orden = ordenResult.rows[0];
+
+    if (
+      req.usuario.rol === "TECNICO"
+      && Number(orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      throw Object.assign(new Error("Orden no encontrada para el tecnico"), { status: 404 });
+    }
+
+    const tipoOrden = normalizeTipoAtencion(orden.tipo_orden || orden.tipo_atencion);
+
+    if (tipoOrden !== "PUESTA_EN_MARCHA") {
+      throw Object.assign(new Error("La orden no corresponde a PUESTA_EN_MARCHA"), { status: 409 });
+    }
+
+    const finalizacionResult = await client.query(
+      `SELECT id_historial
+      FROM historial_estados_orden
+      WHERE id_orden = $1
+        AND accion = 'FINALIZAR_PUESTA_EN_MARCHA'
+      ORDER BY id_historial DESC
+      LIMIT 1`,
+      [idOrden]
+    );
+
+    if (orden.estado === "LISTA_PARA_ENTREGA" || finalizacionResult.rows.length > 0) {
+      throw Object.assign(new Error("La puesta en marcha ya fue finalizada"), { status: 409 });
+    }
+
+    if (orden.estado !== "EN_REVISION") {
+      throw Object.assign(new Error("La orden debe estar EN_REVISION para finalizar la puesta en marcha"), { status: 409 });
+    }
+
+    const updateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET estado = 'LISTA_PARA_ENTREGA',
+          fecha_lista_entrega = CURRENT_TIMESTAMP,
+          version = version + 1
+      WHERE id_orden = $1
+        AND estado = 'EN_REVISION'
+      RETURNING id_orden, estado, fecha_lista_entrega, version, id_responsable`,
+      [idOrden]
+    );
+
+    if (updateResult.rows.length === 0) {
+      throw Object.assign(new Error("La orden cambio mientras se finalizaba la puesta en marcha"), { status: 409 });
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, 'EN_REVISION', 'LISTA_PARA_ENTREGA', $2, 'FINALIZAR_PUESTA_EN_MARCHA', $3)`,
+      [idOrden, req.usuario.id_usuario, "Puesta en marcha finalizada sin consumo de repuestos"]
+    );
+
+    await client.query("COMMIT");
+    return res.json({ orden: updateResult.rows[0] });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    console.error("Error finalizando puesta en marcha:", error);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
 router.post("/:id/finalizar-reparacion", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
   const idOrden = Number(req.params.id);
 

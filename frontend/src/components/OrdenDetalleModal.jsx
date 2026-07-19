@@ -118,7 +118,9 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const totalRepuestos = useMemo(() => (detalle?.repuestos || []).reduce((total, repuesto) => total + Number(repuesto.subtotal ?? Number(repuesto.cantidad || 0) * Number(repuesto.precio_unitario || 0)), 0), [detalle]);
   const tipoOrden = normalizeTipoOrden(detalle?.orden?.tipo_orden || detalle?.orden?.tipo_atencion);
   const isGarantiaOrder = tipoOrden === "REVISION_GARANTIA";
+  const isPuestaEnMarcha = tipoOrden === "PUESTA_EN_MARCHA";
   const hasDiagnostico = Boolean(detalle?.orden?.diagnostico?.trim());
+  const hasRegistroTecnico = hasDiagnostico || Boolean(detalle?.orden?.informe_tecnico?.trim());
   const hasFinalDecision = (detalle?.orden?.garantia_aprobada_por_admin !== null
     && detalle?.orden?.garantia_aprobada_por_admin !== undefined)
     || ["APROBADA", "RECHAZADA"].includes(detalle?.garantia?.estado);
@@ -138,6 +140,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const canEditTrabajo = workflowMode
     && !isReadOnly
     && (isAdmin || isTecnico)
+    && !isPuestaEnMarcha
     && ["EN_REVISION", "EN_REPARACION"].includes(detalle?.orden?.estado)
     && ownsOrder
     && !borradorFinalizado
@@ -184,6 +187,12 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     && ownsOrder
     && detalle?.orden?.estado === "EN_REPARACION"
     && tipoOrden !== "PUESTA_EN_MARCHA";
+  const canFinalizarPuestaEnMarcha = workflowMode
+    && !isReadOnly
+    && (isAdmin || isTecnico)
+    && ownsOrder
+    && isPuestaEnMarcha
+    && detalle?.orden?.estado === "EN_REVISION";
   const canEntregarOrden = (isAdmin || isRecepcionista)
     && ["LISTA_PARA_ENTREGA", "RETIRO_SIN_REPARAR"].includes(detalle?.orden?.estado);
 
@@ -402,6 +411,21 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       setSaving("");
     }
   }
+  async function handleFinalizarPuestaEnMarcha() {
+    if (!window.confirm("Confirmas que la puesta en marcha fue completada y la maquina queda lista para entrega?")) return;
+
+    setSaving("finalizar-puesta-en-marcha");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/finalizar-puesta-en-marcha`);
+      await afterMutation("Puesta en marcha finalizada correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo finalizar la puesta en marcha.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleFinalizarReparacion() {
     if (!window.confirm("Se descontara definitivamente el stock de todos los repuestos de la orden. ¿Deseas finalizar la reparacion?")) return;
 
@@ -518,24 +542,25 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     ? [
         ["resumen", "Resumen"],
         ["producto", "Cliente / Maquina"],
-        ...(borradorFinalizado || detalle?.cotizaciones?.length > 0 ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
+        ...(!isPuestaEnMarcha && (borradorFinalizado || detalle?.cotizaciones?.length > 0)
+          ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]]
+          : [])
       ]
     : workflowMode
       ? [
           ["resumen", "Resumen"],
           ["producto", "Cliente / Maquina"],
-          ["diagnostico", "Diagnostico"],
+          ["diagnostico", isPuestaEnMarcha ? "Comprobaciones" : "Diagnostico"],
           ...(isGarantiaOrder ? [["garantia", "Garantia"]] : []),
-          ["repuestos", "Repuestos"],
-          ["borrador", "Borrador tecnico"]
+          ...(!isPuestaEnMarcha ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
         ]
       : [
           ["resumen", "Resumen"],
           ["producto", "Cliente / Producto"],
-          ["diagnostico", "Diagnostico"],
-          ["repuestos", "Repuestos usados"],
-          ["borrador", "Borrador tecnico"],
-          ["garantia", "Garantia"],
+          ["diagnostico", isPuestaEnMarcha ? "Comprobaciones" : "Diagnostico"],
+          ...(!isPuestaEnMarcha
+            ? [["repuestos", "Repuestos usados"], ["borrador", "Borrador tecnico"], ["garantia", "Garantia"]]
+            : []),
           ["evidencias", "Evidencias"]
         ];
   return (
@@ -562,6 +587,10 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   {tabs.map(([key, label]) => <li className="nav-item" key={key}><button className={`nav-link ${activeTab === key ? "active" : ""}`} type="button" onClick={() => setActiveTab(key)}>{label}</button></li>)}
                 </ul>
 
+                {canFinalizarPuestaEnMarcha ? <div className="alert alert-info d-flex flex-wrap justify-content-between align-items-center gap-3">
+                  <span>Finaliza las comprobaciones para dejar la maquina lista para entrega.</span>
+                  <button className="btn btn-primary" type="button" disabled={saving === "finalizar-puesta-en-marcha"} onClick={handleFinalizarPuestaEnMarcha}>{saving === "finalizar-puesta-en-marcha" ? "Finalizando..." : "Finalizar puesta en marcha"}</button>
+                </div> : null}
                 {canFinalizarReparacion ? <div className="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-3">
                   <span>Al finalizar se descontara definitivamente el stock de los repuestos registrados.</span>
                   <button className="btn btn-primary" type="button" disabled={saving === "finalizar-reparacion"} onClick={handleFinalizarReparacion}>{saving === "finalizar-reparacion" ? "Finalizando..." : "Finalizar reparacion"}</button>
@@ -597,21 +626,21 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                 </div> : null}
 
                 {!isRecepcionista && activeTab === "diagnostico" ? <div className="detail-card">
-                  <h3 className="h6">Diagnostico e informe tecnico</h3>
+                  <h3 className="h6">{isPuestaEnMarcha ? "Comprobaciones de puesta en marcha" : "Diagnostico e informe tecnico"}</h3>
                   <p><strong>Problema reportado:</strong> {detalle.orden.descripcion_problema || "Sin descripcion"}</p>
                   {canEditDiagnostico ? <form className="row g-3" onSubmit={handleSaveInforme}>
-                    <div className="col-md-6"><label className="form-label">Diagnostico</label><textarea className="form-control" value={informeForm.diagnostico} onChange={(event) => setInformeForm((current) => ({ ...current, diagnostico: event.target.value }))} required /></div>
-                    <div className="col-md-6"><label className="form-label">Informe / observaciones tecnicas</label><textarea className="form-control" value={informeForm.informe_tecnico} onChange={(event) => setInformeForm((current) => ({ ...current, informe_tecnico: event.target.value }))} /></div>
-                    <div className="col-md-3"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div>
-                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "informe"}>{saving === "informe" ? "Guardando..." : "Guardar diagnostico"}</button></div>
+                    <div className="col-md-6"><label className="form-label">{isPuestaEnMarcha ? "Diagnostico (opcional)" : "Diagnostico"}</label><textarea className="form-control" value={informeForm.diagnostico} onChange={(event) => setInformeForm((current) => ({ ...current, diagnostico: event.target.value }))} required={!isPuestaEnMarcha} /></div>
+                    <div className="col-md-6"><label className="form-label">{isPuestaEnMarcha ? "Comprobaciones / observaciones tecnicas" : "Informe / observaciones tecnicas"}</label><textarea className="form-control" value={informeForm.informe_tecnico} onChange={(event) => setInformeForm((current) => ({ ...current, informe_tecnico: event.target.value }))} required={isPuestaEnMarcha} /></div>
+                    {!isPuestaEnMarcha ? <div className="col-md-3"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div> : null}
+                    <div className="col-12"><button className="btn btn-primary" disabled={saving === "informe"}>{saving === "informe" ? "Guardando..." : (isPuestaEnMarcha ? "Guardar comprobaciones" : "Guardar diagnostico")}</button></div>
                   </form> : <div className="detail-grid">
-                    <DetailItem label="Diagnostico">{detalle.orden.diagnostico}</DetailItem>
-                    <DetailItem label="Informe tecnico">{detalle.orden.informe_tecnico}</DetailItem>
-                    <DetailItem label="Mano de obra estimada">{formatCurrency(detalle.orden.mano_obra)}</DetailItem>
+                    <DetailItem label={isPuestaEnMarcha ? "Registro adicional" : "Diagnostico"}>{detalle.orden.diagnostico}</DetailItem>
+                    <DetailItem label={isPuestaEnMarcha ? "Comprobaciones tecnicas" : "Informe tecnico"}>{detalle.orden.informe_tecnico}</DetailItem>
+                    {!isPuestaEnMarcha ? <DetailItem label="Mano de obra estimada">{formatCurrency(detalle.orden.mano_obra)}</DetailItem> : null}
                   </div>}
-                  {workflowMode && !canEditDiagnostico && !hasDiagnostico ? <p className="alert alert-info mt-3 mb-0">El diagnostico solo puede registrarse mientras la orden propia esta en revision.</p> : null}
+                  {workflowMode && !canEditDiagnostico && !hasRegistroTecnico ? <p className="alert alert-info mt-3 mb-0">{isPuestaEnMarcha ? "Las comprobaciones solo pueden registrarse mientras la orden propia esta en revision." : "El diagnostico solo puede registrarse mientras la orden propia esta en revision."}</p> : null}
                 </div> : null}
-                {activeTab === "repuestos" ? <div className="detail-card">
+                {!isPuestaEnMarcha && activeTab === "repuestos" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3"><h3 className="h6 mb-0">Repuestos del borrador</h3><strong>Total repuestos: {formatCurrency(totalRepuestos)}</strong></div>
                   {detalle.repuestos.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Repuesto</th><th>Stock</th><th>Cantidad</th><th>Precio aplicado</th><th>Subtotal</th><th>Acciones</th></tr></thead><tbody>{detalle.repuestos.map((repuesto) => <tr key={repuesto.id_repuesto_usado}><td>{repuesto.nombre_repuesto}<span className="table-subtext">{repuesto.codigo_repuesto || "Registro heredado"}</span></td><td>{repuesto.stock_disponible ?? "Sin catalogo"}</td><td>{canEditTrabajo && repuesto.id_repuesto ? <input className="form-control form-control-sm" type="number" min="1" max={repuesto.stock_disponible} value={cantidadesRepuestos[repuesto.id_repuesto_usado] ?? repuesto.cantidad} onChange={(event) => setCantidadesRepuestos((current) => ({ ...current, [repuesto.id_repuesto_usado]: event.target.value }))} /> : repuesto.cantidad}</td><td>{formatCurrency(repuesto.precio_unitario)}</td><td>{formatCurrency(repuesto.subtotal)}</td><td>{canEditTrabajo && repuesto.id_repuesto ? <div className="d-flex flex-wrap gap-2"><button className="btn btn-outline-primary btn-sm" type="button" disabled={saving === `repuesto-${repuesto.id_repuesto_usado}`} onClick={() => handleUpdateRepuesto(repuesto)}>Actualizar</button><button className="btn btn-outline-danger btn-sm" type="button" disabled={saving === `repuesto-${repuesto.id_repuesto_usado}`} onClick={() => handleRemoveRepuesto(repuesto)}>Retirar</button></div> : "Solo lectura"}</td></tr>)}</tbody></table></div> : <p className="empty-state">No hay repuestos registrados.</p>}
                   {canEditTrabajo ? <form className="row g-3 mt-2" onSubmit={handleAddRepuesto}>
@@ -623,7 +652,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   </form> : null}
                   {borradorFinalizado ? <p className="alert alert-info mt-3 mb-0">El borrador tecnico esta finalizado y sus repuestos quedaron en solo lectura.</p> : null}
                 </div> : null}
-                {activeTab === "borrador" ? <div className="detail-card">
+                {!isPuestaEnMarcha && activeTab === "borrador" ? <div className="detail-card">
                   <h3 className="h6">Borrador tecnico</h3>
                   <div className="detail-grid mb-3">
                     {requiereCotizacion ? <>
