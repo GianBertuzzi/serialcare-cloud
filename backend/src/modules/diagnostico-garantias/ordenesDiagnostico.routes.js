@@ -7,7 +7,6 @@ const { getUsuarioSucursal } = require("../../shared/services/usuarioContext.ser
 const {
   getOrdenDetalle,
   getGarantiaDetalle,
-  getOrdenParaUsuario,
   getOrdenTrabajoEditable
 } = require("../../shared/repositories/ordenAccess.repository");
 
@@ -125,37 +124,6 @@ router.post("/:id/tomar", verificarRol("ADMIN", "TECNICO"), async (req, res) => 
     return res.status(500).json({ error: "Error interno del servidor" });
   } finally {
     client.release();
-  }
-});
-
-router.put("/:id/estado", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const estado = clean(req.body?.estado).toUpperCase();
-
-  if (!estado) {
-    return res.status(400).json({ error: "estado es obligatorio" });
-  }
-
-  try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
-
-    if (access.error) {
-      return res.status(access.status).json({ error: access.error });
-    }
-
-    const result = await db.query(
-      `UPDATE ordenes_servicio
-      SET estado = $1
-      WHERE id_orden = $2
-        AND id_sucursal = $3
-      RETURNING id_orden`,
-      [estado, access.orden.id_orden, access.orden.id_sucursal]
-    );
-
-    const orden = await getOrdenDetalle(result.rows[0].id_orden);
-    return res.json({ orden });
-  } catch (error) {
-    console.error("Error actualizando estado de orden:", error);
-    return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 
@@ -1099,46 +1067,6 @@ router.post("/:id/finalizar-reparacion", verificarRol("ADMIN", "TECNICO"), async
     return res.status(500).json({ error: "Error interno del servidor" });
   } finally {
     client.release();
-  }
-});
-
-router.post("/:id/solicitar-garantia", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
-  const motivoRaw = req.body?.motivo_solicitud ?? req.body?.observacion ?? "";
-  const observacion = clean(motivoRaw) || "Solicitud de garantia levantada desde orden de servicio";
-
-  try {
-    const access = await getOrdenParaUsuario(req.params.id, req.usuario);
-
-    if (access.error) {
-      return res.status(access.status).json({ error: access.error });
-    }
-
-    const duplicateResult = await db.query(
-      `SELECT id_garantia
-      FROM garantias
-      WHERE id_orden = $1
-        AND estado IN ('PENDIENTE', 'EN_REVISION')
-      LIMIT 1`,
-      [access.orden.id_orden]
-    );
-
-    if (duplicateResult.rows.length > 0) {
-      return res.status(409).json({ error: "Ya existe una solicitud de garantia activa para esta orden" });
-    }
-
-    const idTecnico = access.orden.id_tecnico || (req.usuario.rol === "TECNICO" ? req.usuario.id_usuario : null);
-    const result = await db.query(
-      `INSERT INTO garantias (id_orden, id_producto, id_sucursal, id_tecnico, estado, observacion)
-      VALUES ($1, $2, $3, $4, 'PENDIENTE', $5)
-      RETURNING id_garantia`,
-      [access.orden.id_orden, access.orden.id_producto, access.orden.id_sucursal, idTecnico, observacion]
-    );
-
-    const garantia = await getGarantiaDetalle(result.rows[0].id_garantia);
-    return res.status(201).json({ garantia });
-  } catch (error) {
-    console.error("Error solicitando garantia desde orden:", error);
-    return res.status(500).json({ error: "Error interno del servidor" });
   }
 });
 

@@ -266,8 +266,7 @@ textarea {
 
 .surface-card,
 .stat-card,
-.auth-card,
-.public-card {
+.auth-card {
   border-radius: 14px;
   background: var(--sc-surface);
   box-shadow: 0 12px 34px rgba(16, 31, 56, 0.08) !important;
@@ -505,28 +504,24 @@ textarea {
   background: #f8fafc;
 }
 
-.product-preview div,
-.result-item {
+.product-preview div {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.product-preview span,
-.result-item span {
+.product-preview span {
   color: var(--sc-muted);
   font-size: 0.74rem;
   font-weight: 850;
   text-transform: uppercase;
 }
 
-.product-preview strong,
-.result-item strong {
+.product-preview strong {
   overflow-wrap: anywhere;
 }
 
-.auth-page,
-.public-shell {
+.auth-page {
   min-height: 100vh;
   display: grid;
   place-items: center;
@@ -539,10 +534,6 @@ textarea {
 
 .auth-card {
   width: min(100%, 460px);
-}
-
-.public-card {
-  width: min(100%, 960px);
 }
 
 .auth-brand {
@@ -559,14 +550,6 @@ textarea {
   font-weight: 880;
   line-height: 1.04;
   letter-spacing: 0;
-}
-
-.result-item {
-  height: 100%;
-  border: 1px solid var(--sc-border);
-  border-radius: 12px;
-  padding: 14px;
-  background: #f8fafc;
 }
 
 .min-w-0 {
@@ -643,52 +626,12 @@ textarea {
   text-transform: uppercase;
 }
 
-.order-action-panel textarea {
-  min-height: 96px;
-  resize: vertical;
-}
 .form-section-heading {
   margin-bottom: 12px;
   color: var(--sc-primary-dark);
   font-size: 0.78rem;
   font-weight: 850;
   text-transform: uppercase;
-}
-.order-action-modal {
-  background: rgba(15, 32, 59, 0.18);
-}
-
-.order-modal-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.order-modal-summary div {
-  border: 1px solid var(--sc-border);
-  border-radius: 12px;
-  padding: 12px;
-  background: #f8fafc;
-}
-
-.order-modal-summary span {
-  display: block;
-  color: var(--sc-muted);
-  font-size: 0.72rem;
-  font-weight: 850;
-  text-transform: uppercase;
-}
-
-.order-modal-summary strong {
-  display: block;
-  margin-top: 4px;
-  overflow-wrap: anywhere;
-}
-
-@media (max-width: 760px) {
-  .order-modal-summary {
-    grid-template-columns: 1fr;
-  }
 }
 .order-detail-modal {
   background: rgba(15, 32, 59, 0.18);

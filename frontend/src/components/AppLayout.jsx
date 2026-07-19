@@ -1,4 +1,4 @@
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import { useState } from "react";
 import { getDashboardPath, useAuth } from "../context/AuthContext.jsx";
 
@@ -33,8 +33,7 @@ const menuByRole = {
     { label: "Clientes", to: "/recepcionista/clientes" }
   ],
   CLIENTE: [
-    { label: "Dashboard", to: "/cliente" },
-    { label: "Consulta publica", to: "/consulta-publica" }
+    { label: "Dashboard", to: "/cliente" }
   ]
 };
 
@@ -49,7 +48,6 @@ function getInitials(name = "SC") {
 
 function AppLayout({ title, eyebrow, children }) {
   const { logout, user } = useAuth();
-  const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const dashboardPath = getDashboardPath(user?.rol);
   const initials = getInitials(user?.nombre || user?.email || "SC");

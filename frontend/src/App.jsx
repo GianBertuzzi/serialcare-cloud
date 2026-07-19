@@ -21,14 +21,12 @@ import RecepcionistaOrdenes from "./pages/recepcionista/RecepcionistaOrdenes.jsx
 import ClienteDashboard from "./pages/ClienteDashboard.jsx";
 import MarcaDashboard from "./pages/MarcaDashboard.jsx";
 import MarcaSucursales from "./pages/marca/MarcaSucursales.jsx";
-import ConsultaPublica from "./pages/ConsultaPublica.jsx";
 
 function App() {
   return (
     <Routes>
-      <Route path="/" element={<Navigate to="/consulta-publica" replace />} />
+      <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
-      <Route path="/consulta-publica" element={<ConsultaPublica />} />
 
       <Route path="/admin" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminDashboard /></ProtectedRoute>} />
       <Route path="/admin/ordenes" element={<ProtectedRoute allowedRoles={["ADMIN"]}><AdminOrdenes /></ProtectedRoute>} />
@@ -57,7 +55,7 @@ function App() {
       <Route path="/marca" element={<ProtectedRoute allowedRoles={["MARCA"]}><MarcaDashboard /></ProtectedRoute>} />
       <Route path="/marca/sucursales" element={<ProtectedRoute allowedRoles={["MARCA"]}><MarcaSucursales /></ProtectedRoute>} />
 
-      <Route path="*" element={<Navigate to="/consulta-publica" replace />} />
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   );
 }

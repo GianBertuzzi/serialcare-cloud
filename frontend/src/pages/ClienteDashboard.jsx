@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import AppLayout from "../components/AppLayout.jsx";
 import StatCard from "../components/StatCard.jsx";
 import StatusBadge from "../components/StatusBadge.jsx";
@@ -70,9 +69,6 @@ function ClienteDashboard() {
             <h2 className="h5 mb-1">Productos registrados</h2>
             <p className="table-count mb-0">{productos.length} registros</p>
           </div>
-          <Link className="btn btn-outline-secondary" to="/consulta-publica">
-            Consulta publica
-          </Link>
         </div>
 
         {isLoading ? <div className="card-body text-secondary">Cargando tus productos...</div> : null}

@@ -88,28 +88,6 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) ultima_orden ON TRUE`;
 
-router.get("/serie/:numeroSerie", async (req, res) => {
-  const { numeroSerie } = req.params;
-
-  try {
-    const result = await db.query(
-      `${PRODUCTO_SELECT}
-      WHERE UPPER(p.numero_serie) = UPPER($1)
-      LIMIT 1`,
-      [numeroSerie]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Producto no encontrado" });
-    }
-
-    return res.json({ producto: result.rows[0] });
-  } catch (error) {
-    console.error("Error consultando producto por serie:", error);
-    return res.status(500).json({ error: "Error interno del servidor" });
-  }
-});
-
 router.get("/", verificarToken, verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"), async (req, res) => {
   try {
     const rol = req.usuario.rol;

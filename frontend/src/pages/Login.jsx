@@ -1,5 +1,5 @@
 ﻿import { useState } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { getDashboardPath, useAuth } from "../context/AuthContext.jsx";
 
 function Login() {
@@ -83,9 +83,6 @@ function Login() {
             </button>
           </form>
 
-          <Link className="btn btn-link px-0 mt-3" to="/consulta-publica">
-            Consulta publica por numero de serie
-          </Link>
         </div>
       </section>
     </main>
