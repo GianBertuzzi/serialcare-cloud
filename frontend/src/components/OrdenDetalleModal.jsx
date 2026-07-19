@@ -55,6 +55,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const [discountForm, setDiscountForm] = useState(initialDiscountForm);
   const [quotationResponseForm, setQuotationResponseForm] = useState(initialQuotationResponseForm);
   const [cantidadesRepuestos, setCantidadesRepuestos] = useState({});
+  const [movimientosFinalizacion, setMovimientosFinalizacion] = useState([]);
 
   const idOrden = orden?.id_orden;
 
@@ -109,6 +110,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     setEvidenciaForm(initialEvidenciaForm);
     setEvidenciaUploadForm(initialEvidenciaUploadForm);
     setQuotationResponseForm(initialQuotationResponseForm);
+    setMovimientosFinalizacion([]);
     loadDetalle();
     loadCatalogoRepuestos();
   }, [idOrden]);
@@ -173,6 +175,12 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     && detalle?.orden?.estado === "REQUIERE_NUEVA_COTIZACION"
     && cotizacionActual?.cerrada === true
     && respuestaCotizacion === "SOLICITA_NUEVA_COTIZACION";
+  const canFinalizarReparacion = workflowMode
+    && !isReadOnly
+    && (isAdmin || isTecnico)
+    && ownsOrder
+    && detalle?.orden?.estado === "EN_REPARACION"
+    && tipoOrden !== "PUESTA_EN_MARCHA";
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -389,6 +397,27 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       setSaving("");
     }
   }
+  async function handleFinalizarReparacion() {
+    if (!window.confirm("Se descontara definitivamente el stock de todos los repuestos de la orden. ¿Deseas finalizar la reparacion?")) return;
+
+    setSaving("finalizar-reparacion");
+    setError("");
+    setSuccess("");
+    try {
+      const response = await api.post(`/ordenes/${idOrden}/finalizar-reparacion`);
+      const movimientos = response.data.movimientos || [];
+      setMovimientosFinalizacion(movimientos);
+      await afterMutation(
+        movimientos.length > 0
+          ? `Reparacion finalizada y ${movimientos.length} consumos registrados.`
+          : "Reparacion finalizada sin consumo de repuestos."
+      );
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo finalizar la reparacion.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleAddEvidencia(event) {
     event.preventDefault();
     setSaving("evidencia");
@@ -511,6 +540,15 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                 <ul className="nav nav-tabs order-tabs mb-3">
                   {tabs.map(([key, label]) => <li className="nav-item" key={key}><button className={`nav-link ${activeTab === key ? "active" : ""}`} type="button" onClick={() => setActiveTab(key)}>{label}</button></li>)}
                 </ul>
+
+                {canFinalizarReparacion ? <div className="alert alert-warning d-flex flex-wrap justify-content-between align-items-center gap-3">
+                  <span>Al finalizar se descontara definitivamente el stock de los repuestos registrados.</span>
+                  <button className="btn btn-primary" type="button" disabled={saving === "finalizar-reparacion"} onClick={handleFinalizarReparacion}>{saving === "finalizar-reparacion" ? "Finalizando..." : "Finalizar reparacion"}</button>
+                </div> : null}
+                {movimientosFinalizacion.length > 0 ? <div className="alert alert-success">
+                  <strong>Consumos registrados</strong>
+                  <ul className="mb-0 mt-2">{movimientosFinalizacion.map((movimiento) => <li key={movimiento.id_movimiento}>{movimiento.nombre_repuesto}: {movimiento.cantidad} unidad(es), stock {movimiento.stock_anterior} → {movimiento.stock_nuevo}</li>)}</ul>
+                </div> : null}
 
                 {activeTab === "resumen" ? <div className="detail-grid">
                   <DetailItem label="Estado"><StatusBadge value={detalle.orden.estado} /></DetailItem>

@@ -2599,6 +2599,344 @@ router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (
   }
 });
 
+router.post("/:id/finalizar-reparacion", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      throw Object.assign(new Error("Usuario no tiene sucursal asignada"), { status: 400 });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT
+        id_orden,
+        id_sucursal,
+        id_responsable,
+        tipo_orden,
+        tipo_atencion,
+        diagnostico,
+        garantia_aprobada_por_admin,
+        estado,
+        version
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      throw Object.assign(new Error("Orden no encontrada"), { status: 404 });
+    }
+
+    const orden = ordenResult.rows[0];
+
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      throw Object.assign(new Error("Orden no encontrada para el tecnico"), { status: 404 });
+    }
+
+    const tipoOrden = normalizeTipoAtencion(orden.tipo_orden || orden.tipo_atencion);
+
+    if (tipoOrden === "PUESTA_EN_MARCHA") {
+      throw Object.assign(new Error("PUESTA_EN_MARCHA no se finaliza como reparacion"), { status: 409 });
+    }
+
+    const finalizacionResult = await client.query(
+      `SELECT id_historial
+      FROM historial_estados_orden
+      WHERE id_orden = $1
+        AND accion = 'FINALIZAR_REPARACION'
+      ORDER BY id_historial DESC
+      LIMIT 1
+      FOR UPDATE`,
+      [idOrden]
+    );
+
+    if (orden.estado === "LISTA_PARA_ENTREGA" || finalizacionResult.rows.length > 0) {
+      throw Object.assign(new Error("La reparacion ya fue finalizada"), { status: 409 });
+    }
+
+    if (orden.estado !== "EN_REPARACION") {
+      throw Object.assign(new Error("La orden debe estar EN_REPARACION para finalizar"), { status: 409 });
+    }
+
+    if (!clean(orden.diagnostico)) {
+      throw Object.assign(new Error("Debe existir un diagnostico antes de finalizar la reparacion"), { status: 409 });
+    }
+
+    const garantiaAprobada = tipoOrden === "REVISION_GARANTIA" && orden.garantia_aprobada_por_admin === true;
+    const garantiaRechazada = tipoOrden === "REVISION_GARANTIA" && orden.garantia_aprobada_por_admin === false;
+
+    if (tipoOrden === "REVISION_GARANTIA" && !garantiaAprobada && !garantiaRechazada) {
+      throw Object.assign(new Error("La orden de garantia no tiene una decision final"), { status: 409 });
+    }
+
+    if (!["REPARACION", "REVISION_GARANTIA", "MANTENCION"].includes(tipoOrden)) {
+      throw Object.assign(new Error("El tipo de orden no admite finalizacion de reparacion"), { status: 409 });
+    }
+
+    const requiereCotizacionAprobada = tipoOrden === "REPARACION" || garantiaRechazada;
+
+    if (requiereCotizacionAprobada) {
+      const cotizacionResult = await client.query(
+        `SELECT
+          c.id_cotizacion,
+          c.version,
+          c.cerrada,
+          c.pdf_estado,
+          rc.respuesta
+        FROM cotizaciones c
+        LEFT JOIN respuestas_cotizacion rc ON rc.id_cotizacion = c.id_cotizacion
+        WHERE c.id_orden = $1
+        ORDER BY c.version DESC
+        LIMIT 1
+        FOR UPDATE OF c`,
+        [idOrden]
+      );
+      const cotizacion = cotizacionResult.rows[0] || null;
+
+      if (!cotizacion) {
+        throw Object.assign(new Error("La reparacion requiere una cotizacion aprobada"), { status: 409 });
+      }
+
+      if (!cotizacion.cerrada) {
+        throw Object.assign(new Error("La cotizacion debe estar cerrada"), { status: 409 });
+      }
+
+      if (cotizacion.pdf_estado !== "GENERADO") {
+        throw Object.assign(new Error("La cotizacion debe tener un PDF generado"), { status: 409 });
+      }
+
+      if (cotizacion.respuesta !== "APROBADA") {
+        throw Object.assign(new Error("La cotizacion debe tener respuesta APROBADA"), { status: 409 });
+      }
+    }
+
+    const detallesResult = await client.query(
+      `SELECT id_detalle, id_orden, id_repuesto, cantidad
+      FROM repuestos_usados
+      WHERE id_orden = $1
+      ORDER BY id_repuesto NULLS LAST, id_detalle
+      FOR UPDATE`,
+      [idOrden]
+    );
+    const detalles = detallesResult.rows;
+
+    for (const detalle of detalles) {
+      if (Number(detalle.id_orden) !== idOrden) {
+        throw Object.assign(new Error("Existe un detalle que no pertenece a la orden"), { status: 409 });
+      }
+
+      if (!Number.isInteger(Number(detalle.id_repuesto)) || Number(detalle.id_repuesto) <= 0) {
+        throw Object.assign(new Error("Todos los detalles deben tener un repuesto de catalogo valido"), { status: 409 });
+      }
+
+      if (!Number.isInteger(Number(detalle.cantidad)) || Number(detalle.cantidad) <= 0) {
+        throw Object.assign(new Error("Todos los detalles deben tener una cantidad positiva"), { status: 409 });
+      }
+    }
+
+    const clavesIdempotencia = detalles.map(
+      (detalle) => `consumo-reparacion-orden-${idOrden}-detalle-${detalle.id_detalle}`
+    );
+    const consumosExistentes = await client.query(
+      `SELECT id_movimiento, id_detalle_repuesto, clave_idempotencia
+      FROM movimientos_inventario
+      WHERE (id_orden = $1 AND tipo_movimiento = 'CONSUMO_REPARACION')
+        OR clave_idempotencia = ANY($2::VARCHAR[])
+      FOR UPDATE`,
+      [idOrden, clavesIdempotencia]
+    );
+
+    if (consumosExistentes.rows.length > 0) {
+      throw Object.assign(new Error("El consumo de repuestos ya fue registrado para esta reparacion"), { status: 409 });
+    }
+
+    const idsRepuestos = [...new Set(detalles.map((detalle) => Number(detalle.id_repuesto)))];
+    let repuestos = [];
+
+    if (idsRepuestos.length > 0) {
+      const repuestosResult = await client.query(
+        `SELECT id_repuesto, id_sucursal, nombre, stock
+        FROM repuestos
+        WHERE id_repuesto = ANY($1::INTEGER[])
+          AND id_sucursal = $2
+        ORDER BY id_repuesto
+        FOR UPDATE`,
+        [idsRepuestos, usuarioSucursal.id_sucursal]
+      );
+      repuestos = repuestosResult.rows;
+
+      if (repuestos.length !== idsRepuestos.length) {
+        throw Object.assign(new Error("Uno o mas repuestos no existen en el catalogo de la sucursal"), { status: 409 });
+      }
+    }
+
+    const repuestosPorId = new Map(
+      repuestos.map((repuesto) => [Number(repuesto.id_repuesto), {
+        ...repuesto,
+        stock: Number(repuesto.stock)
+      }])
+    );
+    const cantidadesPorRepuesto = new Map();
+
+    for (const detalle of detalles) {
+      const idRepuesto = Number(detalle.id_repuesto);
+      cantidadesPorRepuesto.set(
+        idRepuesto,
+        (cantidadesPorRepuesto.get(idRepuesto) || 0) + Number(detalle.cantidad)
+      );
+    }
+
+    for (const [idRepuesto, cantidadTotal] of cantidadesPorRepuesto) {
+      const repuesto = repuestosPorId.get(idRepuesto);
+
+      if (!repuesto || repuesto.stock < cantidadTotal) {
+        throw Object.assign(new Error(`Stock insuficiente para ${repuesto?.nombre || `repuesto ${idRepuesto}`}`), {
+          status: 409,
+          details: {
+            id_repuesto: idRepuesto,
+            stock_disponible: repuesto?.stock ?? 0,
+            cantidad_requerida: cantidadTotal
+          }
+        });
+      }
+    }
+
+    const movimientos = [];
+
+    for (const detalle of detalles) {
+      const idRepuesto = Number(detalle.id_repuesto);
+      const cantidad = Number(detalle.cantidad);
+      const repuesto = repuestosPorId.get(idRepuesto);
+      const stockAnterior = repuesto.stock;
+      const stockNuevo = stockAnterior - cantidad;
+      const claveIdempotencia = `consumo-reparacion-orden-${idOrden}-detalle-${detalle.id_detalle}`;
+
+      const stockResult = await client.query(
+        `UPDATE repuestos
+        SET stock = $1
+        WHERE id_repuesto = $2
+          AND id_sucursal = $3
+          AND stock = $4
+        RETURNING id_repuesto, nombre, stock`,
+        [stockNuevo, idRepuesto, usuarioSucursal.id_sucursal, stockAnterior]
+      );
+
+      if (stockResult.rows.length === 0) {
+        throw Object.assign(new Error("El stock cambio mientras se finalizaba la reparacion"), { status: 409 });
+      }
+
+      const movimientoResult = await client.query(
+        `INSERT INTO movimientos_inventario (
+          id_repuesto,
+          id_orden,
+          id_detalle_repuesto,
+          tipo_movimiento,
+          cantidad,
+          stock_anterior,
+          stock_nuevo,
+          motivo,
+          id_usuario,
+          clave_idempotencia
+        )
+        VALUES ($1, $2, $3, 'CONSUMO_REPARACION', $4, $5, $6, $7, $8, $9)
+        RETURNING id_movimiento, id_repuesto, id_orden, id_detalle_repuesto,
+          tipo_movimiento, cantidad, stock_anterior, stock_nuevo,
+          motivo, id_usuario, fecha_creacion, clave_idempotencia`,
+        [
+          idRepuesto,
+          idOrden,
+          detalle.id_detalle,
+          cantidad,
+          stockAnterior,
+          stockNuevo,
+          `Consumo definitivo al finalizar la reparacion de la orden ${idOrden}`,
+          req.usuario.id_usuario,
+          claveIdempotencia
+        ]
+      );
+
+      movimientos.push({
+        ...movimientoResult.rows[0],
+        nombre_repuesto: repuesto.nombre
+      });
+      repuesto.stock = stockNuevo;
+    }
+
+    const ordenUpdateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET estado = 'LISTA_PARA_ENTREGA',
+          fecha_lista_entrega = CURRENT_TIMESTAMP,
+          version = version + 1
+      WHERE id_orden = $1
+        AND estado = 'EN_REPARACION'
+      RETURNING id_orden, estado, fecha_lista_entrega, version, id_responsable`,
+      [idOrden]
+    );
+
+    if (ordenUpdateResult.rows.length === 0) {
+      throw Object.assign(new Error("La orden cambio mientras se finalizaba la reparacion"), { status: 409 });
+    }
+
+    const totalUnidades = detalles.reduce((total, detalle) => total + Number(detalle.cantidad), 0);
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, 'EN_REPARACION', 'LISTA_PARA_ENTREGA', $2, 'FINALIZAR_REPARACION', $3)`,
+      [
+        idOrden,
+        req.usuario.id_usuario,
+        movimientos.length > 0
+          ? `Consumo definitivo: ${movimientos.length} detalles, ${totalUnidades} unidades`
+          : "Reparacion finalizada sin consumo de repuestos"
+      ]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      orden: ordenUpdateResult.rows[0],
+      movimientos,
+      total_cliente: garantiaAprobada ? 0 : null
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23505" && error.constraint === "ux_movimientos_inventario_clave_idempotencia") {
+      return res.status(409).json({ error: "El consumo de repuestos ya fue registrado para esta reparacion" });
+    }
+
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message, ...(error.details || {}) });
+    }
+
+    console.error("Error finalizando reparacion:", {
+      message: error.message,
+      code: error.code
+    });
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
 router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);
