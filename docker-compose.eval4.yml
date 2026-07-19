@@ -61,7 +61,8 @@ services:
     restart: "no"
     networks:
       - eval4-internal
-
+  # Ports 3001-3004 son solo para pruebas locales; en produccion,
+  # retirar ports y mantener el trafico dentro de eval4-internal.
   clientes-maquinas:
     <<: *module-common
     image: serialcare-eval4-clientes-maquinas:1.0.0
@@ -109,6 +110,34 @@ services:
       PORT_INVENTARIO_DOCUMENTOS: 3004
     ports:
       - "3004:3004"
+
+  frontend-gateway:
+    image: serialcare-eval4-frontend-gateway:1.0.0
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+    depends_on:
+      clientes-maquinas:
+        condition: service_healthy
+      recepcion-cotizaciones:
+        condition: service_healthy
+      diagnostico-garantias:
+        condition: service_healthy
+      inventario-documentos:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - eval4-internal
 
 volumes:
   postgres_eval4_data:
