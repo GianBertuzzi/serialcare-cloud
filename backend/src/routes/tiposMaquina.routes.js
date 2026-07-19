@@ -64,7 +64,7 @@ const SELECT_TIPOS = `SELECT
 FROM tipos_maquina tm
 INNER JOIN sucursales s ON s.id_sucursal = tm.id_sucursal`;
 
-router.get("/", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+router.get("/", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
   try {
     const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario);
 

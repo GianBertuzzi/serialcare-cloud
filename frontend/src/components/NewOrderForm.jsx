@@ -9,12 +9,14 @@ const TIPOS_ORDEN = ["REPARACION", "REVISION_GARANTIA", "MANTENCION", "PUESTA_EN
 const initialForm = {
   id_cliente: "",
   cliente_mode: "existente",
+  cliente_search: "",
   cliente_nombre: "",
   cliente_rut: "",
   cliente_telefono: "",
   cliente_email: "",
   cliente_direccion: "",
   producto_mode: "existente",
+  producto_search: "",
   id_producto: "",
   numero_serie: "",
   marca: "",
@@ -31,57 +33,49 @@ const initialForm = {
 
 function NewOrderForm({ onCancel, onCreated }) {
   const { user } = useAuth();
-  const canCreateRelatedRecords = user?.rol === "ADMIN";
+  const canCreateRelatedRecords = ["ADMIN", "RECEPCIONISTA"].includes(user?.rol);
   const [form, setForm] = useState(initialForm);
   const [clientes, setClientes] = useState([]);
   const [productos, setProductos] = useState([]);
   const [tiposMaquina, setTiposMaquina] = useState([]);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRegisteringProducto, setIsRegisteringProducto] = useState(false);
 
   async function loadCatalogos() {
     setIsLoading(true);
     setError("");
 
     try {
-      const [clientesResponse, tiposResponse] = await Promise.all([
+      const [clientesResponse, productosResponse, tiposResponse] = await Promise.all([
         api.get("/clientes"),
-        canCreateRelatedRecords ? api.get("/tipos-maquina") : Promise.resolve({ data: { tipos_maquina: [] } })
+        api.get("/productos"),
+        api.get("/tipos-maquina")
       ]);
 
       const nextClientes = clientesResponse.data.clientes || [];
+      const nextProductos = productosResponse.data.productos || [];
       const nextTipos = tiposResponse.data.tipos_maquina || tiposResponse.data.tipos || [];
-      setClientes(nextClientes);
-      setTiposMaquina(nextTipos);
+      const firstClient = nextClientes[0] || null;
+      const firstProduct = firstClient
+        ? nextProductos.find((producto) => Number(producto.id_cliente) === Number(firstClient.id_cliente))
+        : null;
 
-      if (nextClientes.length > 0) {
-        setForm((current) => ({ ...current, id_cliente: String(nextClientes[0].id_cliente), id_tipo_maquina: nextTipos[0] ? String(nextTipos[0].id_tipo_maquina) : "" }));
-        await loadProductos(nextClientes[0].id_cliente);
-      } else if (nextTipos.length > 0) {
-        setForm((current) => ({ ...current, id_tipo_maquina: String(nextTipos[0].id_tipo_maquina) }));
-      }
+      setClientes(nextClientes);
+      setProductos(nextProductos);
+      setTiposMaquina(nextTipos);
+      setForm((current) => ({
+        ...current,
+        id_cliente: firstClient ? String(firstClient.id_cliente) : "",
+        id_producto: firstProduct ? String(firstProduct.id_producto) : "",
+        id_tipo_maquina: nextTipos[0] ? String(nextTipos[0].id_tipo_maquina) : ""
+      }));
     } catch (requestError) {
       setError(requestError.response?.data?.error || "No se pudieron cargar los datos para crear la orden.");
     } finally {
       setIsLoading(false);
-    }
-  }
-
-  async function loadProductos(idCliente) {
-    if (!idCliente) {
-      setProductos([]);
-      return;
-    }
-
-    try {
-      const response = await api.get(`/clientes/${idCliente}/productos`);
-      const nextProductos = response.data.productos || [];
-      setProductos(nextProductos);
-      setForm((current) => ({ ...current, id_producto: nextProductos[0] ? String(nextProductos[0].id_producto) : "" }));
-    } catch (requestError) {
-      setProductos([]);
-      setError(requestError.response?.data?.error || "No se pudieron cargar las maquinas del cliente.");
     }
   }
 
@@ -93,7 +87,6 @@ function NewOrderForm({ onCancel, onCreated }) {
     const { name, value } = event.target;
 
     if (name === "cliente_mode") {
-      setProductos([]);
       setForm((current) => ({
         ...current,
         cliente_mode: value,
@@ -105,14 +98,48 @@ function NewOrderForm({ onCancel, onCreated }) {
     }
 
     if (name === "id_cliente") {
-      setForm((current) => ({ ...current, id_cliente: value, id_producto: "" }));
-      loadProductos(value);
+      const firstProduct = productos.find((producto) => Number(producto.id_cliente) === Number(value));
+      setForm((current) => ({
+        ...current,
+        id_cliente: value,
+        id_producto: firstProduct ? String(firstProduct.id_producto) : ""
+      }));
+      return;
+    }
+
+    if (name === "id_producto") {
+      const producto = productos.find((item) => String(item.id_producto) === String(value));
+      setForm((current) => ({
+        ...current,
+        id_producto: value,
+        id_cliente: producto ? String(producto.id_cliente) : current.id_cliente
+      }));
+      return;
+    }
+
+    if (name === "producto_mode") {
+      setForm((current) => ({ ...current, producto_mode: value, id_producto: "" }));
       return;
     }
 
     setForm((current) => ({ ...current, [name]: value }));
   }
 
+  const clienteSearch = form.cliente_search.trim().toLowerCase();
+  const productoSearch = form.producto_search.trim().toLowerCase();
+  const filteredClientes = clientes.filter((cliente) =>
+    !clienteSearch || [cliente.nombre, cliente.rut].some((value) =>
+      String(value || "").toLowerCase().includes(clienteSearch)
+    )
+  );
+  const filteredProductos = productos.filter((producto) => {
+    const cliente = clientes.find((item) => Number(item.id_cliente) === Number(producto.id_cliente));
+    const matchesCliente = !form.id_cliente || Number(producto.id_cliente) === Number(form.id_cliente);
+    const matchesSearch = [producto.numero_serie, producto.marca, producto.modelo, cliente?.nombre, cliente?.rut]
+      .some((value) => String(value || "").toLowerCase().includes(productoSearch));
+
+    return productoSearch ? matchesSearch : matchesCliente;
+  });
   const selectedProducto = productos.find((producto) => String(producto.id_producto) === String(form.id_producto));
   const selectedTipoMaquina = tiposMaquina.find((tipo) => String(tipo.id_tipo_maquina) === String(form.id_tipo_maquina));
   const garantiaVencida = selectedProducto?.estado_garantia === "VENCIDA" && form.tipo_orden === "REVISION_GARANTIA";
@@ -165,6 +192,61 @@ function NewOrderForm({ onCancel, onCreated }) {
     return "";
   }
 
+  async function handleRegisterProducto() {
+    if (form.cliente_mode !== "existente" || !form.id_cliente) {
+      setError("Selecciona un cliente existente antes de registrar la maquina.");
+      return;
+    }
+
+    if (!form.numero_serie.trim() || !form.marca.trim() || !form.modelo.trim()) {
+      setError("Serie, marca y modelo de la maquina son obligatorios.");
+      return;
+    }
+
+    if (!form.id_tipo_maquina) {
+      setError("Selecciona un tipo de maquina.");
+      return;
+    }
+
+    setIsRegisteringProducto(true);
+    setError("");
+    setNotice("");
+
+    try {
+      const response = await api.post("/productos", {
+        id_cliente: Number(form.id_cliente),
+        numero_serie: form.numero_serie.trim(),
+        marca: form.marca.trim(),
+        modelo: form.modelo.trim(),
+        id_tipo_maquina: Number(form.id_tipo_maquina),
+        descripcion: form.descripcion_producto.trim(),
+        estado_garantia: form.estado_garantia,
+        alerta_propiedad: form.alerta_propiedad === "true"
+      });
+      const producto = response.data.producto;
+
+      setProductos((current) => [producto, ...current.filter((item) => item.id_producto !== producto.id_producto)]);
+      setForm((current) => ({
+        ...current,
+        producto_mode: "existente",
+        producto_search: producto.numero_serie,
+        id_producto: String(producto.id_producto),
+        id_cliente: String(producto.id_cliente),
+        numero_serie: "",
+        marca: "",
+        modelo: "",
+        descripcion_producto: "",
+        estado_garantia: "PENDIENTE",
+        alerta_propiedad: "false"
+      }));
+      setNotice("Maquina registrada y seleccionada para la orden.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo registrar la maquina.");
+    } finally {
+      setIsRegisteringProducto(false);
+    }
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     const validationError = validateForm();
@@ -209,13 +291,29 @@ function NewOrderForm({ onCancel, onCreated }) {
             </div>
 
             {form.cliente_mode === "existente" ? (
-              <div className="col-md-8">
-                <label className="form-label">Cliente</label>
-                <select className="form-select" name="id_cliente" value={form.id_cliente} onChange={handleChange}>
-                  <option value="">Seleccionar cliente</option>
-                  {clientes.map((cliente) => <option key={cliente.id_cliente} value={cliente.id_cliente}>{cliente.nombre}</option>)}
-                </select>
-              </div>
+              <>
+                <div className="col-md-4">
+                  <label className="form-label">Buscar cliente</label>
+                  <input
+                    className="form-control"
+                    name="cliente_search"
+                    value={form.cliente_search}
+                    onChange={handleChange}
+                    placeholder="Nombre o RUT"
+                  />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Cliente</label>
+                  <select className="form-select" name="id_cliente" value={form.id_cliente} onChange={handleChange}>
+                    <option value="">Seleccionar cliente</option>
+                    {filteredClientes.map((cliente) => (
+                      <option key={cliente.id_cliente} value={cliente.id_cliente}>
+                        {cliente.nombre}{cliente.rut ? ` - ${cliente.rut}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
             ) : (
               <>
                 <div className="col-md-4"><label className="form-label">Nombre cliente</label><input className="form-control" name="cliente_nombre" value={form.cliente_nombre} onChange={handleChange} required /></div>
@@ -238,13 +336,29 @@ function NewOrderForm({ onCancel, onCreated }) {
             </div>
 
             {form.producto_mode === "existente" ? (
-              <div className="col-md-8">
-                <label className="form-label">Maquina</label>
-                <select className="form-select" name="id_producto" value={form.id_producto} onChange={handleChange}>
-                  <option value="">Seleccionar maquina</option>
-                  {productos.map((producto) => <option key={producto.id_producto} value={producto.id_producto}>{producto.numero_serie} - {producto.marca} {producto.modelo}</option>)}
-                </select>
-              </div>
+              <>
+                <div className="col-md-4">
+                  <label className="form-label">Buscar maquina</label>
+                  <input
+                    className="form-control"
+                    name="producto_search"
+                    value={form.producto_search}
+                    onChange={handleChange}
+                    placeholder="Serie, cliente, RUT, marca o modelo"
+                  />
+                </div>
+                <div className="col-md-4">
+                  <label className="form-label">Maquina</label>
+                  <select className="form-select" name="id_producto" value={form.id_producto} onChange={handleChange}>
+                    <option value="">Seleccionar maquina</option>
+                    {filteredProductos.map((producto) => (
+                      <option key={producto.id_producto} value={producto.id_producto}>
+                        {producto.numero_serie} - {producto.marca} {producto.modelo}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </>
             ) : (
               <>
                 <div className="col-md-3"><label className="form-label">Numero de serie</label><input className="form-control" name="numero_serie" value={form.numero_serie} onChange={handleChange} required /></div>
@@ -254,6 +368,22 @@ function NewOrderForm({ onCancel, onCreated }) {
                 <div className="col-md-5"><label className="form-label">Descripcion</label><input className="form-control" name="descripcion_producto" value={form.descripcion_producto} onChange={handleChange} /></div>
                 <div className="col-md-4"><label className="form-label">Estado garantia</label><select className="form-select" name="estado_garantia" value={form.estado_garantia} onChange={handleChange}><option value="ACTIVA">ACTIVA</option><option value="VENCIDA">VENCIDA</option><option value="PENDIENTE">PENDIENTE</option><option value="EN_REVISION">EN_REVISION</option></select></div>
                 <div className="col-md-3"><label className="form-label">Alerta propiedad</label><select className="form-select" name="alerta_propiedad" value={form.alerta_propiedad} onChange={handleChange}><option value="false">No</option><option value="true">Si</option></select></div>
+                <div className="col-12">
+                  {form.cliente_mode === "existente" ? (
+                    <button
+                      className="btn btn-outline-primary"
+                      type="button"
+                      disabled={isRegisteringProducto || isSubmitting}
+                      onClick={handleRegisterProducto}
+                    >
+                      {isRegisteringProducto ? "Registrando maquina..." : "Registrar maquina"}
+                    </button>
+                  ) : (
+                    <p className="alert alert-info mb-0">
+                      El cliente y la maquina se registraran al crear la orden.
+                    </p>
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -281,11 +411,12 @@ function NewOrderForm({ onCancel, onCreated }) {
             <div className="col-md-6"><label className="form-label">Observaciones de recepcion</label><textarea className="form-control" name="observaciones_recepcion" value={form.observaciones_recepcion} onChange={handleChange} /></div>
           </div>
 
+          {notice ? <p className="alert alert-success mt-3 mb-0">{notice}</p> : null}
           {error ? <p className="alert alert-danger mt-3 mb-0">{error}</p> : null}
 
           <div className="d-flex flex-wrap gap-2 mt-3">
-            <button className="btn btn-primary" type="submit" disabled={isSubmitting || isLoading}>{isSubmitting ? "Creando..." : "Crear orden"}</button>
-            <button className="btn btn-outline-secondary" type="button" disabled={isSubmitting} onClick={onCancel}>Cancelar</button>
+            <button className="btn btn-primary" type="submit" disabled={isSubmitting || isRegisteringProducto || isLoading}>{isSubmitting ? "Creando..." : "Crear orden"}</button>
+            <button className="btn btn-outline-secondary" type="button" disabled={isSubmitting || isRegisteringProducto} onClick={onCancel}>Cancelar</button>
           </div>
         </form>
       </div>

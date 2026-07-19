@@ -88,13 +88,13 @@ LEFT JOIN LATERAL (
   LIMIT 1
 ) ultima_orden ON TRUE`;
 
-router.get("/", verificarToken, verificarRol("ADMIN", "TECNICO", "MARCA", "CLIENTE"), async (req, res) => {
+router.get("/", verificarToken, verificarRol("ADMIN", "RECEPCIONISTA", "MARCA", "CLIENTE"), async (req, res) => {
   try {
     const rol = req.usuario.rol;
     let whereClause = "";
     let params = [];
 
-    if (rol === "ADMIN" || rol === "TECNICO") {
+    if (rol === "ADMIN" || rol === "RECEPCIONISTA") {
       const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario);
 
       if (!requireSucursal(usuarioSucursal, res, rol)) {
@@ -124,7 +124,7 @@ router.get("/", verificarToken, verificarRol("ADMIN", "TECNICO", "MARCA", "CLIEN
   }
 });
 
-router.post("/", verificarToken, verificarRol("ADMIN"), async (req, res) => {
+router.post("/", verificarToken, verificarRol("ADMIN", "RECEPCIONISTA"), async (req, res) => {
   const numeroSerie = clean(req.body?.numero_serie).toUpperCase();
   const marca = clean(req.body?.marca);
   const modelo = clean(req.body?.modelo);
@@ -150,7 +150,7 @@ router.post("/", verificarToken, verificarRol("ADMIN"), async (req, res) => {
   try {
     const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario);
 
-    if (!requireSucursal(usuarioSucursal, res, "ADMIN")) {
+    if (!requireSucursal(usuarioSucursal, res, req.usuario.rol)) {
       return;
     }
 
@@ -208,7 +208,7 @@ router.post("/", verificarToken, verificarRol("ADMIN"), async (req, res) => {
     return res.status(201).json({ producto: productoResult.rows[0] });
   } catch (error) {
     if (error.code === "23505") {
-      return res.status(400).json({ error: "El numero de serie ya existe" });
+      return res.status(409).json({ error: "El numero de serie ya existe" });
     }
 
     if (error.code === "23503") {
