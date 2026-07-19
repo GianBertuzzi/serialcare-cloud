@@ -2937,6 +2937,99 @@ router.post("/:id/finalizar-reparacion", verificarRol("ADMIN", "TECNICO"), async
   }
 });
 
+router.post("/:id/entregar", verificarRol("ADMIN", "RECEPCIONISTA"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      throw Object.assign(new Error("Usuario no tiene sucursal asignada"), { status: 400 });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT id_orden, estado, fecha_entrega
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      throw Object.assign(new Error("Orden no encontrada"), { status: 404 });
+    }
+
+    const orden = ordenResult.rows[0];
+
+    if (orden.estado === "ENTREGADA" || orden.fecha_entrega) {
+      throw Object.assign(new Error("La orden ya fue entregada"), { status: 409 });
+    }
+
+    if (!["LISTA_PARA_ENTREGA", "RETIRO_SIN_REPARAR"].includes(orden.estado)) {
+      throw Object.assign(
+        new Error("La orden debe estar LISTA_PARA_ENTREGA o RETIRO_SIN_REPARAR para entregar"),
+        { status: 409 }
+      );
+    }
+
+    const entregaResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET estado = 'ENTREGADA',
+          fecha_entrega = CURRENT_TIMESTAMP,
+          version = version + 1
+      WHERE id_orden = $1
+        AND estado = $2
+        AND fecha_entrega IS NULL
+      RETURNING id_orden, estado, fecha_entrega, version`,
+      [idOrden, orden.estado]
+    );
+
+    if (entregaResult.rows.length === 0) {
+      throw Object.assign(new Error("La orden ya no esta disponible para entrega"), { status: 409 });
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion
+      )
+      VALUES ($1, $2, 'ENTREGADA', $3, 'ENTREGAR_ORDEN')`,
+      [idOrden, orden.estado, req.usuario.id_usuario]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      mensaje: "Entrega registrada correctamente",
+      orden: entregaResult.rows[0]
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.status) {
+      return res.status(error.status).json({ error: error.message });
+    }
+
+    console.error("Error entregando orden:", {
+      message: error.message,
+      code: error.code
+    });
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
+  }
+});
+
 router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);

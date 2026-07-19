@@ -181,6 +181,8 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     && ownsOrder
     && detalle?.orden?.estado === "EN_REPARACION"
     && tipoOrden !== "PUESTA_EN_MARCHA";
+  const canEntregarOrden = (isAdmin || isRecepcionista)
+    && ["LISTA_PARA_ENTREGA", "RETIRO_SIN_REPARAR"].includes(detalle?.orden?.estado);
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -418,6 +420,22 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       setSaving("");
     }
   }
+  async function handleEntregarOrden() {
+    if (!window.confirm("Confirmas la entrega de la maquina al cliente?")) return;
+
+    setSaving("entregar-orden");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/entregar`);
+      await afterMutation("Maquina entregada correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo registrar la entrega.");
+    } finally {
+      setSaving("");
+    }
+  }
+
   async function handleAddEvidencia(event) {
     event.preventDefault();
     setSaving("evidencia");
@@ -545,6 +563,10 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   <span>Al finalizar se descontara definitivamente el stock de los repuestos registrados.</span>
                   <button className="btn btn-primary" type="button" disabled={saving === "finalizar-reparacion"} onClick={handleFinalizarReparacion}>{saving === "finalizar-reparacion" ? "Finalizando..." : "Finalizar reparacion"}</button>
                 </div> : null}
+                {canEntregarOrden ? <div className="alert alert-primary d-flex flex-wrap justify-content-between align-items-center gap-3">
+                  <span>La maquina esta disponible para registrar su entrega al cliente.</span>
+                  <button className="btn btn-primary" type="button" disabled={saving === "entregar-orden"} onClick={handleEntregarOrden}>{saving === "entregar-orden" ? "Registrando entrega..." : "Entregar m\u00e1quina"}</button>
+                </div> : null}
                 {movimientosFinalizacion.length > 0 ? <div className="alert alert-success">
                   <strong>Consumos registrados</strong>
                   <ul className="mb-0 mt-2">{movimientosFinalizacion.map((movimiento) => <li key={movimiento.id_movimiento}>{movimiento.nombre_repuesto}: {movimiento.cantidad} unidad(es), stock {movimiento.stock_anterior} → {movimiento.stock_nuevo}</li>)}</ul>
@@ -556,6 +578,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   <DetailItem label="Tipo de maquina">{detalle.orden.tipo_maquina}</DetailItem>
                   <DetailItem label="Sucursal">{detalle.sucursal?.nombre}</DetailItem>
                   <DetailItem label="Fecha creacion">{formatDate(detalle.orden.fecha_creacion)}</DetailItem>
+                  {detalle.orden.fecha_entrega ? <DetailItem label="Fecha de entrega">{formatDate(detalle.orden.fecha_entrega)}</DetailItem> : null}
                   {isRecepcionista ? <>
                     <DetailItem label="Responsable">{detalle.orden.responsable_nombre || detalle.orden.tecnico_nombre || "Sin asignar"}</DetailItem>
                     <DetailItem label="Problema reportado">{detalle.orden.descripcion_problema}</DetailItem>
