@@ -19,6 +19,7 @@ const ALLOWED_EVIDENCE_FILE_TYPES = new Set([
 ]);
 const initialDecisionForm = { observacion: "" };
 const initialDiscountForm = { tipo_descuento: "", valor_descuento: "0", motivo_descuento: "" };
+const initialQuotationResponseForm = { observacion: "" };
 
 function DetailItem({ label, children }) {
   return <div className="detail-box"><span>{label}</span><strong>{children || "Sin dato"}</strong></div>;
@@ -52,6 +53,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const [evidenciaUploadForm, setEvidenciaUploadForm] = useState(initialEvidenciaUploadForm);
   const [decisionForm, setDecisionForm] = useState(initialDecisionForm);
   const [discountForm, setDiscountForm] = useState(initialDiscountForm);
+  const [quotationResponseForm, setQuotationResponseForm] = useState(initialQuotationResponseForm);
   const [cantidadesRepuestos, setCantidadesRepuestos] = useState({});
 
   const idOrden = orden?.id_orden;
@@ -106,6 +108,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     setRepuestoForm(initialRepuestoForm);
     setEvidenciaForm(initialEvidenciaForm);
     setEvidenciaUploadForm(initialEvidenciaUploadForm);
+    setQuotationResponseForm(initialQuotationResponseForm);
     loadDetalle();
     loadCatalogoRepuestos();
   }, [idOrden]);
@@ -127,13 +130,16 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const garantiaAprobada = isGarantiaOrder && detalle?.orden?.garantia_aprobada_por_admin === true;
   const garantiaRechazada = isGarantiaOrder && detalle?.orden?.garantia_aprobada_por_admin === false;
   const borradorFinalizado = detalle?.borrador_tecnico_finalizado === true;
+  const cicloReabierto = detalle?.orden?.estado === "EN_REVISION"
+    && detalle?.cotizacion?.cerrada === true
+    && detalle?.cotizacion?.respuesta === "SOLICITA_NUEVA_COTIZACION";
   const canEditTrabajo = workflowMode
     && !isReadOnly
     && (isAdmin || isTecnico)
     && ["EN_REVISION", "EN_REPARACION"].includes(detalle?.orden?.estado)
     && ownsOrder
     && !borradorFinalizado
-    && (!detalle?.cotizacion || detalle.cotizacion.estado === "BORRADOR");
+    && (!detalle?.cotizacion || detalle.cotizacion.estado === "BORRADOR" || cicloReabierto);
   const requiereCotizacion = tipoOrden === "REPARACION" || garantiaRechazada;
   const valorIngreso = Number(detalle?.orden?.valor_ingreso || detalle?.orden?.valor_revision || 0);
   const valorIngresoAplicado = garantiaRechazada ? 0 : valorIngreso;
@@ -154,6 +160,19 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
   const canAccessPdf = cotizacionActual?.cerrada === true
     && cotizacionActual?.pdf_estado === "GENERADO"
     && Boolean(cotizacionActual?.pdf_blob_name);
+  const respuestaCotizacion = cotizacionActual?.respuesta || null;
+  const canRespondQuotation = (isAdmin || isRecepcionista)
+    && cotizacionActual?.cerrada === true
+    && cotizacionActual?.pdf_estado === "GENERADO"
+    && detalle?.orden?.estado === "ESPERANDO_APROBACION"
+    && !respuestaCotizacion;
+  const canReopenQuotation = workflowMode
+    && !isReadOnly
+    && (isAdmin || isTecnico)
+    && ownsOrder
+    && detalle?.orden?.estado === "REQUIERE_NUEVA_COTIZACION"
+    && cotizacionActual?.cerrada === true
+    && respuestaCotizacion === "SOLICITA_NUEVA_COTIZACION";
 
   async function afterMutation(message) {
     setSuccess(message);
@@ -317,6 +336,46 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       setSaving("");
     }
   }
+  async function handleQuotationResponse(respuesta) {
+    const confirmations = {
+      APROBADA: "La orden avanzara a reparacion. ¿Confirmas la aprobacion del cliente?",
+      SOLICITA_NUEVA_COTIZACION: "La orden quedara pendiente de una nueva cotizacion. ¿Confirmas la solicitud?",
+      RECHAZADA: "La orden quedara para retiro sin reparar. ¿Confirmas el rechazo del cliente?"
+    };
+
+    if (!window.confirm(confirmations[respuesta])) return;
+
+    setSaving("respuesta-cotizacion");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/cotizaciones/${cotizacionActual.version}/respuesta`, {
+        respuesta,
+        observacion: quotationResponseForm.observacion.trim() || null
+      });
+      setQuotationResponseForm(initialQuotationResponseForm);
+      await afterMutation("Respuesta del cliente registrada correctamente.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo registrar la respuesta del cliente.");
+    } finally {
+      setSaving("");
+    }
+  }
+  async function handleReopenQuotation() {
+    if (!window.confirm("Se reabrira el trabajo tecnico para preparar una nueva cotizacion. ¿Deseas continuar?")) return;
+
+    setSaving("reabrir-cotizacion");
+    setError("");
+    setSuccess("");
+    try {
+      await api.post(`/ordenes/${idOrden}/reabrir-cotizacion`);
+      await afterMutation("Orden reabierta para preparar una nueva cotizacion.");
+    } catch (requestError) {
+      setError(requestError.response?.data?.error || "No se pudo reabrir la cotizacion.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleFinalizarBorrador() {
     setSaving("finalizar-borrador");
     setError("");
@@ -409,7 +468,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
     ? [
         ["resumen", "Resumen"],
         ["producto", "Cliente / Maquina"],
-        ...(borradorFinalizado ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
+        ...(borradorFinalizado || detalle?.cotizaciones?.length > 0 ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
       ]
     : workflowMode
       ? [
@@ -513,6 +572,24 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   {garantiaAprobada ? <p className="alert alert-success">Garantia aprobada: el total del cliente es $0 y no se creara una cotizacion pagada.</p> : null}
                   {isGarantiaOrder && !hasFinalDecision ? <p className="alert alert-warning">Debes registrar la decision de garantia antes de finalizar.</p> : null}
                   {["MANTENCION", "PUESTA_EN_MARCHA"].includes(tipoOrden) ? <p className="alert alert-info">Este tipo conserva el trabajo tecnico, pero no crea una cotizacion normal.</p> : null}
+                  {detalle?.orden?.estado === "REQUIERE_NUEVA_COTIZACION" ? <div className="alert alert-info d-flex flex-wrap justify-content-between align-items-center gap-3">
+                    <span>El cliente solicito una nueva propuesta. La version anterior y su PDF permanecen cerrados.</span>
+                    {canReopenQuotation ? <button className="btn btn-primary" type="button" disabled={saving === "reabrir-cotizacion"} onClick={handleReopenQuotation}>{saving === "reabrir-cotizacion" ? "Reabriendo..." : "Preparar nueva cotizacion"}</button> : null}
+                  </div> : null}
+                  {cicloReabierto ? <p className="alert alert-info">Nuevo ciclo tecnico activo. Puedes ajustar repuestos y mano de obra; la cotizacion anterior permanece en solo lectura.</p> : null}
+                  {detalle.cotizaciones?.length > 0 ? <div className="table-responsive mb-3">
+                    <table className="table table-sm align-middle serial-table">
+                      <thead><tr><th>Version</th><th>Estado</th><th>Total final</th><th>PDF</th><th>Respuesta</th><th>Fecha</th></tr></thead>
+                      <tbody>{detalle.cotizaciones.map((cotizacion) => <tr key={cotizacion.version}>
+                        <td>Version {cotizacion.version}</td>
+                        <td><StatusBadge value={cotizacion.cerrada ? "CERRADA" : cotizacion.estado} /></td>
+                        <td>{formatCurrency(cotizacion.total_final)}</td>
+                        <td><StatusBadge value={cotizacion.pdf_estado || "NO_GENERADO"} /></td>
+                        <td>{cotizacion.respuesta ? <><StatusBadge value={cotizacion.respuesta} /><span className="table-subtext">{cotizacion.registrada_por_nombre || "Usuario"} · {formatDate(cotizacion.fecha_respuesta_cliente)}</span></> : "Sin respuesta"}</td>
+                        <td>{formatDate(cotizacion.fecha_creacion)}</td>
+                      </tr>)}</tbody>
+                    </table>
+                  </div> : null}
                   {canEditDiscount ? <form className="row g-3 mb-3" onSubmit={handleSaveDiscount}>
                     <div className="col-md-4"><label className="form-label">Tipo de descuento</label><select className="form-select" value={discountForm.tipo_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, tipo_descuento: event.target.value, valor_descuento: event.target.value ? current.valor_descuento : "0", motivo_descuento: event.target.value ? current.motivo_descuento : "" }))}><option value="">Sin descuento</option><option value="PORCENTAJE">Porcentaje</option><option value="MONTO_FIJO">Monto fijo</option></select></div>
                     <div className="col-md-3"><label className="form-label">Valor</label><input className="form-control" type="number" min="0" max={discountForm.tipo_descuento === "PORCENTAJE" ? "100" : undefined} step="0.01" disabled={!discountForm.tipo_descuento} value={discountForm.valor_descuento} onChange={(event) => setDiscountForm((current) => ({ ...current, valor_descuento: event.target.value }))} /></div>
@@ -526,6 +603,20 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                       {canGeneratePdf ? <button className="btn btn-primary" type="button" disabled={saving === "generar-pdf"} onClick={handleGeneratePdf}>{saving === "generar-pdf" ? "Generando..." : "Generar PDF y cerrar cotizacion"}</button> : null}
                       {canAccessPdf ? <><button className="btn btn-outline-primary" type="button" disabled={saving === "ver-pdf"} onClick={() => handlePdf(true)}>Ver PDF</button><button className="btn btn-outline-secondary" type="button" disabled={saving === "descargar-pdf"} onClick={() => handlePdf(false)}>Descargar PDF</button></> : null}
                     </div>
+                    {respuestaCotizacion ? <div className="alert alert-light border mt-3 mb-0">
+                      <div className="d-flex flex-wrap justify-content-between gap-2 align-items-center mb-2"><strong>Respuesta del cliente</strong><StatusBadge value={respuestaCotizacion} /></div>
+                      <div className="small text-secondary">Registrada por {cotizacionActual.registrada_por_nombre || "Usuario"} · {formatDate(cotizacionActual.fecha_respuesta_cliente)}</div>
+                      {cotizacionActual.observacion_respuesta ? <p className="mb-0 mt-2">{cotizacionActual.observacion_respuesta}</p> : null}
+                    </div> : null}
+                    {canRespondQuotation ? <div className="mt-3">
+                      <label className="form-label" htmlFor="observacion-respuesta-cotizacion">Observación opcional</label>
+                      <textarea id="observacion-respuesta-cotizacion" className="form-control mb-3" value={quotationResponseForm.observacion} onChange={(event) => setQuotationResponseForm({ observacion: event.target.value })} />
+                      <div className="d-flex flex-wrap gap-2">
+                        <button className="btn btn-success" type="button" disabled={saving === "respuesta-cotizacion"} onClick={() => handleQuotationResponse("APROBADA")}>Aprobar reparación</button>
+                        <button className="btn btn-outline-primary" type="button" disabled={saving === "respuesta-cotizacion"} onClick={() => handleQuotationResponse("SOLICITA_NUEVA_COTIZACION")}>Solicitar nueva cotización</button>
+                        <button className="btn btn-outline-danger" type="button" disabled={saving === "respuesta-cotizacion"} onClick={() => handleQuotationResponse("RECHAZADA")}>Rechazar y retirar sin reparar</button>
+                      </div>
+                    </div> : null}
                   </div> : null}
                   {canEditTrabajo ? <form className="row g-3" onSubmit={handleSaveManoObra}><div className="col-md-4"><label className="form-label">Mano de obra estimada</label><input className="form-control" type="number" min="0" value={informeForm.mano_obra} onChange={(event) => setInformeForm((current) => ({ ...current, mano_obra: event.target.value }))} /></div><div className="col-md-8 d-flex align-items-end"><button className="btn btn-outline-primary" disabled={saving === "mano-obra"}>{saving === "mano-obra" ? "Guardando..." : "Guardar mano de obra"}</button></div></form> : null}
                   {canEditTrabajo ? <div className="mt-3"><button className="btn btn-primary" type="button" disabled={!canFinalizarBorrador || saving === "finalizar-borrador"} onClick={handleFinalizarBorrador}>{saving === "finalizar-borrador" ? "Finalizando..." : "Finalizar borrador tecnico"}</button>{!hasDiagnostico ? <span className="text-secondary ms-3">Primero registra el diagnostico.</span> : null}</div> : null}

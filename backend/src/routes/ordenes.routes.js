@@ -337,16 +337,23 @@ async function getRepuestos(idOrden) {
 async function getCotizacion(idOrden) {
   const result = await db.query(
     `SELECT
-      id_cotizacion, id_orden, version, total_repuestos, valor_ingreso,
-      mano_obra, total_general, total, estado, observacion,
-      subtotal_original, tipo_descuento, valor_descuento, motivo_descuento,
-      id_descuento_aplicado_por, fecha_descuento, total_final, cerrada,
-      fecha_cierre, id_cerrada_por, pdf_estado, pdf_nombre_archivo,
-      pdf_blob_name, pdf_url, pdf_hash, pdf_mime_type, pdf_size_bytes,
-      fecha_pdf, fecha_creacion, fecha_actualizacion, fecha_respuesta
-    FROM cotizaciones
-    WHERE id_orden = $1
-    ORDER BY version DESC
+      c.id_cotizacion, c.id_orden, c.version, c.total_repuestos, c.valor_ingreso,
+      c.mano_obra, c.total_general, c.total, c.estado, c.observacion,
+      c.subtotal_original, c.tipo_descuento, c.valor_descuento, c.motivo_descuento,
+      c.id_descuento_aplicado_por, c.fecha_descuento, c.total_final, c.cerrada,
+      c.fecha_cierre, c.id_cerrada_por, c.pdf_estado, c.pdf_nombre_archivo,
+      c.pdf_blob_name, c.pdf_url, c.pdf_hash, c.pdf_mime_type, c.pdf_size_bytes,
+      c.fecha_pdf, c.fecha_creacion, c.fecha_actualizacion, c.fecha_respuesta,
+      rc.respuesta,
+      rc.observacion AS observacion_respuesta,
+      rc.fecha_respuesta AS fecha_respuesta_cliente,
+      rc.id_registrada_por,
+      ur.nombre AS registrada_por_nombre
+    FROM cotizaciones c
+    LEFT JOIN respuestas_cotizacion rc ON rc.id_cotizacion = c.id_cotizacion
+    LEFT JOIN usuarios ur ON ur.id_usuario = rc.id_registrada_por
+    WHERE c.id_orden = $1
+    ORDER BY c.version DESC
     LIMIT 1`,
     [idOrden]
   );
@@ -356,11 +363,17 @@ async function getCotizacion(idOrden) {
 
 async function getCotizacionesResumen(idOrden) {
   const result = await db.query(
-    `SELECT version, estado, subtotal_original, valor_descuento,
-      total_final, cerrada, pdf_estado, fecha_creacion
-    FROM cotizaciones
-    WHERE id_orden = $1
-    ORDER BY version DESC`,
+    `SELECT
+      c.version, c.estado, c.subtotal_original, c.valor_descuento,
+      c.total_final, c.cerrada, c.pdf_estado, c.fecha_creacion,
+      rc.respuesta, rc.observacion AS observacion_respuesta,
+      rc.fecha_respuesta AS fecha_respuesta_cliente,
+      ur.nombre AS registrada_por_nombre
+    FROM cotizaciones c
+    LEFT JOIN respuestas_cotizacion rc ON rc.id_cotizacion = c.id_cotizacion
+    LEFT JOIN usuarios ur ON ur.id_usuario = rc.id_registrada_por
+    WHERE c.id_orden = $1
+    ORDER BY c.version DESC`,
     [idOrden]
   );
 
@@ -432,12 +445,14 @@ async function getQuotationDocumentData(client, idOrden, version, idSucursal, lo
 }
 async function getBorradorTecnicoFinalizado(idOrden) {
   const result = await db.query(
-    `SELECT EXISTS (
-      SELECT 1
+    `SELECT COALESCE((
+      SELECT accion = 'FINALIZAR_BORRADOR_TECNICO'
       FROM historial_estados_orden
       WHERE id_orden = $1
-        AND accion = 'FINALIZAR_BORRADOR_TECNICO'
-    ) AS finalizado`,
+        AND accion IN ('FINALIZAR_BORRADOR_TECNICO', 'REABRIR_COTIZACION')
+      ORDER BY fecha_creacion DESC, id_historial DESC
+      LIMIT 1
+    ), FALSE) AS finalizado`,
     [idOrden]
   );
 
@@ -1348,25 +1363,31 @@ async function getOrdenTrabajoEditable(client, idOrden, usuario) {
   );
   const cotizacion = cotizacionResult.rows[0] || null;
 
-  if (cotizacion && (cotizacion.estado !== "BORRADOR" || cotizacion.cerrada || cotizacion.pdf_estado !== "NO_GENERADO")) {
+  const cicloResult = await client.query(
+    `SELECT accion
+    FROM historial_estados_orden
+    WHERE id_orden = $1
+      AND accion IN ('FINALIZAR_BORRADOR_TECNICO', 'REABRIR_COTIZACION')
+    ORDER BY fecha_creacion DESC, id_historial DESC
+    LIMIT 1`,
+    [idOrden]
+  );
+  const ultimaAccionCiclo = cicloResult.rows[0]?.accion || null;
+  const cicloReabierto = ultimaAccionCiclo === "REABRIR_COTIZACION";
+
+  if (
+    cotizacion &&
+    !cicloReabierto &&
+    (cotizacion.estado !== "BORRADOR" || cotizacion.cerrada || cotizacion.pdf_estado !== "NO_GENERADO")
+  ) {
     return { status: 409, error: "La cotizacion ya no permite modificar el trabajo tecnico" };
   }
 
-  const finalizadoResult = await client.query(
-    `SELECT EXISTS (
-      SELECT 1
-      FROM historial_estados_orden
-      WHERE id_orden = $1
-        AND accion = 'FINALIZAR_BORRADOR_TECNICO'
-    ) AS finalizado`,
-    [idOrden]
-  );
-
-  if (finalizadoResult.rows[0]?.finalizado) {
+  if (ultimaAccionCiclo === "FINALIZAR_BORRADOR_TECNICO") {
     return { status: 409, error: "El borrador tecnico ya fue finalizado" };
   }
 
-  return { orden, cotizacion, usuarioSucursal };
+  return { orden, cotizacion, usuarioSucursal, cicloReabierto };
 }
 
 router.get("/:id/repuestos", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
@@ -1697,14 +1718,16 @@ router.get("/:id/cotizacion", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", 
       return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
     }
 
-    if (req.usuario.rol === "RECEPCIONISTA" && !(await getBorradorTecnicoFinalizado(access.orden.id_orden))) {
+    const [cotizacion, versiones, borradorFinalizado] = await Promise.all([
+      getCotizacion(access.orden.id_orden),
+      getCotizacionesResumen(access.orden.id_orden),
+      getBorradorTecnicoFinalizado(access.orden.id_orden)
+    ]);
+
+    if (req.usuario.rol === "RECEPCIONISTA" && !borradorFinalizado && !cotizacion?.cerrada) {
       return res.status(409).json({ error: "El borrador tecnico aun no esta finalizado" });
     }
 
-    const [cotizacion, versiones] = await Promise.all([
-      getCotizacion(access.orden.id_orden),
-      getCotizacionesResumen(access.orden.id_orden)
-    ]);
     return res.json({ cotizacion, versiones });
   } catch (error) {
     console.error("Error obteniendo cotizacion:", error);
@@ -2005,18 +2028,25 @@ router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), asy
       throw Object.assign(new Error("La cotizacion cambio mientras se generaba el PDF"), { status: 409 });
     }
 
-    await client.query(
+    const orderUpdateResult = await client.query(
       `UPDATE ordenes_servicio
-      SET version = version + 1
-      WHERE id_orden = $1`,
-      [idOrden]
+      SET estado = 'ESPERANDO_APROBACION',
+          version = version + 1
+      WHERE id_orden = $1
+        AND estado = $2
+      RETURNING id_orden`,
+      [idOrden, orden.estado]
     );
+
+    if (orderUpdateResult.rows.length === 0) {
+      throw Object.assign(new Error("La orden cambio mientras se generaba el PDF"), { status: 409 });
+    }
 
     await client.query(
       `INSERT INTO historial_estados_orden (
         id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
       )
-      VALUES ($1, $2, $2, $3, 'GENERAR_PDF_COTIZACION', $4)`,
+      VALUES ($1, $2, 'ESPERANDO_APROBACION', $3, 'GENERAR_PDF_COTIZACION', $4)`,
       [idOrden, orden.estado, req.usuario.id_usuario, `Version ${version}; blob ${uploaded.blobName}; sha256 ${pdfHash}`]
     );
 
@@ -2052,6 +2082,212 @@ router.post("/:id/cotizaciones/:version/generar-pdf", verificarRol("ADMIN"), asy
   }
 });
 
+router.post("/:id/cotizaciones/:version/respuesta", verificarRol("ADMIN", "RECEPCIONISTA"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+  const version = Number(req.params.version);
+  const camposPermitidos = new Set(["respuesta", "observacion"]);
+  const camposInvalidos = Object.keys(req.body || {}).filter((campo) => !camposPermitidos.has(campo));
+  const respuesta = clean(req.body?.respuesta).toUpperCase();
+  const observacion = clean(req.body?.observacion) || null;
+  const transiciones = {
+    APROBADA: {
+      estado: "EN_REPARACION",
+      accion: "RESPUESTA_COTIZACION_APROBADA"
+    },
+    SOLICITA_NUEVA_COTIZACION: {
+      estado: "REQUIERE_NUEVA_COTIZACION",
+      accion: "SOLICITAR_NUEVA_COTIZACION"
+    },
+    RECHAZADA: {
+      estado: "RETIRO_SIN_REPARAR",
+      accion: "RESPUESTA_COTIZACION_RECHAZADA"
+    }
+  };
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0 || !Number.isInteger(version) || version <= 0) {
+    return res.status(400).json({ error: "id de orden y version deben ser validos" });
+  }
+
+  if (camposInvalidos.length > 0) {
+    return res.status(400).json({ error: "Solo se permite registrar respuesta y observacion" });
+  }
+
+  if (!Object.hasOwn(transiciones, respuesta)) {
+    return res.status(400).json({ error: "respuesta no es valida" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT id_orden, estado
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    const orden = ordenResult.rows[0];
+
+    if (orden.estado !== "ESPERANDO_APROBACION") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden debe estar ESPERANDO_APROBACION para registrar una respuesta" });
+    }
+
+    const cotizacionResult = await client.query(
+      `SELECT
+        c.id_cotizacion,
+        c.id_orden,
+        c.version,
+        c.cerrada,
+        c.pdf_estado,
+        (SELECT MAX(version) FROM cotizaciones WHERE id_orden = $1) AS ultima_version
+      FROM cotizaciones c
+      WHERE c.id_orden = $1
+        AND c.version = $2
+      FOR UPDATE`,
+      [idOrden, version]
+    );
+
+    if (cotizacionResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Cotizacion no encontrada para la version indicada" });
+    }
+
+    const cotizacion = cotizacionResult.rows[0];
+
+    if (Number(cotizacion.ultima_version) !== version) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Solo se puede responder la version mas reciente" });
+    }
+
+    if (!cotizacion.cerrada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La cotizacion debe estar cerrada antes de registrar una respuesta" });
+    }
+
+    if (cotizacion.pdf_estado !== "GENERADO") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La cotizacion debe tener un PDF generado" });
+    }
+
+    const respuestaExistente = await client.query(
+      `SELECT id_respuesta
+      FROM respuestas_cotizacion
+      WHERE id_cotizacion = $1
+      FOR UPDATE`,
+      [cotizacion.id_cotizacion]
+    );
+
+    if (respuestaExistente.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Esta version de cotizacion ya tiene una respuesta registrada" });
+    }
+
+    const respuestaResult = await client.query(
+      `INSERT INTO respuestas_cotizacion (
+        id_cotizacion,
+        id_orden,
+        version_cotizacion,
+        respuesta,
+        observacion,
+        id_registrada_por
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id_respuesta, id_cotizacion, id_orden, version_cotizacion,
+        respuesta, observacion, id_registrada_por, fecha_respuesta`,
+      [
+        cotizacion.id_cotizacion,
+        cotizacion.id_orden,
+        cotizacion.version,
+        respuesta,
+        observacion,
+        req.usuario.id_usuario
+      ]
+    );
+
+    const transicion = transiciones[respuesta];
+    const ordenUpdateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET estado = $1,
+          version = version + 1
+      WHERE id_orden = $2
+        AND estado = 'ESPERANDO_APROBACION'
+      RETURNING id_orden, estado, version`,
+      [transicion.estado, idOrden]
+    );
+
+    if (ordenUpdateResult.rows.length === 0) {
+      throw Object.assign(new Error("La orden cambio mientras se registraba la respuesta"), { status: 409 });
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, 'ESPERANDO_APROBACION', $2, $3, $4, $5)`,
+      [
+        idOrden,
+        transicion.estado,
+        req.usuario.id_usuario,
+        transicion.accion,
+        observacion || `Respuesta ${respuesta} para cotizacion version ${version}`
+      ]
+    );
+
+    const respuestaRegistrada = await client.query(
+      `SELECT
+        rc.id_respuesta,
+        rc.id_cotizacion,
+        rc.id_orden,
+        rc.version_cotizacion,
+        rc.respuesta,
+        rc.observacion,
+        rc.id_registrada_por,
+        rc.fecha_respuesta,
+        u.nombre AS registrada_por_nombre
+      FROM respuestas_cotizacion rc
+      INNER JOIN usuarios u ON u.id_usuario = rc.id_registrada_por
+      WHERE rc.id_respuesta = $1`,
+      [respuestaResult.rows[0].id_respuesta]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      respuesta: respuestaRegistrada.rows[0],
+      orden: ordenUpdateResult.rows[0]
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+
+    if (error.code === "23505") {
+      return res.status(409).json({ error: "Esta version de cotizacion ya tiene una respuesta registrada" });
+    }
+
+    if (error.status === 409) {
+      return res.status(409).json({ error: error.message });
+    }
+
+    console.error("Error registrando respuesta de cotizacion:", error.message);
+    return res.status(500).json({ error: "No se pudo registrar la respuesta de la cotizacion" });
+  } finally {
+    client.release();
+  }
+});
 router.get("/:id/cotizaciones/:version/pdf", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO"), async (req, res) => {
   const idOrden = Number(req.params.id);
   const version = Number(req.params.version);
@@ -2113,6 +2349,120 @@ router.get("/:id/cotizaciones/:version/pdf", verificarRol("ADMIN", "RECEPCIONIST
 
     console.error("Error descargando PDF de cotizacion:", error.message);
     return res.status(500).json({ error: "No se pudo descargar el PDF de cotizacion" });
+  }
+});
+router.post("/:id/reabrir-cotizacion", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
+  const idOrden = Number(req.params.id);
+
+  if (!Number.isInteger(idOrden) || idOrden <= 0) {
+    return res.status(400).json({ error: "id de orden no es valido" });
+  }
+
+  if (Object.keys(req.body || {}).length > 0) {
+    return res.status(400).json({ error: "Esta accion no acepta campos en el body" });
+  }
+
+  const client = await db.pool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const usuarioSucursal = await getUsuarioSucursal(req.usuario.id_usuario, client);
+
+    if (!usuarioSucursal?.id_sucursal) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Usuario no tiene sucursal asignada" });
+    }
+
+    const ordenResult = await client.query(
+      `SELECT id_orden, estado, id_responsable, version
+      FROM ordenes_servicio
+      WHERE id_orden = $1
+        AND id_sucursal = $2
+      FOR UPDATE`,
+      [idOrden, usuarioSucursal.id_sucursal]
+    );
+
+    if (ordenResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada" });
+    }
+
+    const orden = ordenResult.rows[0];
+
+    if (
+      req.usuario.rol === "TECNICO" &&
+      Number(orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
+    if (orden.estado !== "REQUIERE_NUEVA_COTIZACION") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden no requiere una nueva cotizacion" });
+    }
+
+    const cotizacionResult = await client.query(
+      `SELECT c.id_cotizacion, c.version, c.cerrada, c.pdf_estado, rc.respuesta
+      FROM cotizaciones c
+      LEFT JOIN respuestas_cotizacion rc ON rc.id_cotizacion = c.id_cotizacion
+      WHERE c.id_orden = $1
+      ORDER BY c.version DESC
+      LIMIT 1
+      FOR UPDATE OF c`,
+      [idOrden]
+    );
+    const cotizacion = cotizacionResult.rows[0] || null;
+
+    if (!cotizacion?.cerrada) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La ultima cotizacion debe estar cerrada" });
+    }
+
+    if (cotizacion.respuesta !== "SOLICITA_NUEVA_COTIZACION") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La ultima cotizacion no solicita una nueva propuesta" });
+    }
+
+    const updateResult = await client.query(
+      `UPDATE ordenes_servicio
+      SET estado = 'EN_REVISION',
+          version = version + 1
+      WHERE id_orden = $1
+        AND estado = 'REQUIERE_NUEVA_COTIZACION'
+      RETURNING id_orden, estado, id_responsable, version`,
+      [idOrden]
+    );
+
+    if (updateResult.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "La orden ya fue reabierta o cambio de estado" });
+    }
+
+    await client.query(
+      `INSERT INTO historial_estados_orden (
+        id_orden, estado_anterior, estado_nuevo, id_usuario, accion, observacion
+      )
+      VALUES ($1, 'REQUIERE_NUEVA_COTIZACION', 'EN_REVISION', $2, 'REABRIR_COTIZACION', $3)`,
+      [idOrden, req.usuario.id_usuario, `Reapertura desde cotizacion version ${cotizacion.version}`]
+    );
+
+    await client.query("COMMIT");
+    return res.json({
+      orden: updateResult.rows[0],
+      cotizacion_anterior: {
+        version: cotizacion.version,
+        cerrada: cotizacion.cerrada,
+        pdf_estado: cotizacion.pdf_estado,
+        respuesta: cotizacion.respuesta
+      }
+    });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Error reabriendo cotizacion:", error.message);
+    return res.status(500).json({ error: "Error interno del servidor" });
+  } finally {
+    client.release();
   }
 });
 router.post("/:id/finalizar-borrador", verificarRol("ADMIN", "TECNICO"), async (req, res) => {
