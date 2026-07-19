@@ -76,6 +76,18 @@ El workflow no requiere secrets de GitHub y solo tiene permiso `contents: read`.
 
 Que una vulnerabilidad no tenga correccion disponible no la convierte automaticamente en aceptable. Cualquier excepcion futura debe documentar riesgo, alcance, responsable y plazo.
 
+## Excepciones IaC acotadas para AWS Academy
+
+La plantilla corrige todos los controles HIGH y CRITICAL implementables: RDS y EBS cifrados, IMDSv2 obligatorio, instancias de aplicacion y base de datos sin IP publica, PostgreSQL privado, grupos de seguridad con puertos minimos y contenedores sin privilegios adicionales. No existe una lista global de omisiones. Las unicas supresiones se declaran junto al recurso o propiedad exactos mediante `#trivy:ignore:<ID>`:
+
+| Control | Recurso o propiedad | Justificacion academica | Condicion para retirarla |
+|---|---|---|---|
+| `AVD-AWS-0053` | `SerialCareLoadBalancer` | El laboratorio requiere un unico punto de entrada accesible para la demostracion y AWS Academy no entrega conectividad privada al equipo del evaluador. Las instancias de aplicacion y RDS permanecen en subredes privadas. | Disponer de acceso privado administrado o de un perimetro publico alternativo aprobado. |
+| `AVD-AWS-0054` | `SerialCareHttpListener` | No hay dominio ni certificado ACM configurado. Inventar un ARN produciria un despliegue roto; HTTP se limita a datos demostrativos del laboratorio. | Disponer de dominio y certificado ACM validado; entonces reemplazar el listener por HTTPS y redirigir HTTP. |
+| `AVD-AWS-0104` | `AppSecurityGroup.SecurityGroupEgress` TCP 443 | La aplicacion necesita Azure Blob y repositorios de contenedores con destinos dinamicos; AWS Academy no ofrece un punto de egreso administrado reutilizable. PostgreSQL usa una regla separada dirigida exclusivamente al Security Group de RDS. | Incorporar proxy de egreso o endpoints privados y rangos estables para Azure y los registros usados. |
+
+Estas excepciones no cubren cifrado, IMDSv2, ejecucion root, credenciales, acceso publico a PostgreSQL ni egress irrestricto por protocolo. Deben revisarse antes de usar la plantilla fuera del laboratorio.
+
 ## Evidencia sugerida para el video
 
 1. Mostrar los disparadores y el permiso minimo del workflow.
