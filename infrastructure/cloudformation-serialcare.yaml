@@ -410,7 +410,7 @@ Resources:
           ENV_FILE=/etc/serialcare/serialcare.env
           OVERRIDE_FILE=/etc/serialcare/docker-compose.aws.yml
 
-          dnf install -y docker git curl
+          dnf install -y docker git
           systemctl enable --now docker
           install -d -m 0755 /usr/local/lib/docker/cli-plugins /etc/serialcare
 
