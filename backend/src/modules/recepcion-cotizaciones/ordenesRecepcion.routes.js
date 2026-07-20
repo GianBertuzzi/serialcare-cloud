@@ -3,7 +3,12 @@ const express = require("express");
 const db = require("../../db");
 const verificarToken = require("../../middlewares/verificarToken");
 const verificarRol = require("../../middlewares/verificarRol");
-const { uploadPrivateBuffer, downloadPrivateBuffer, deletePrivateBlob } = require("../../services/azureBlob.service");
+const {
+  uploadPrivateBuffer,
+  downloadPrivateBuffer,
+  deletePrivateBlob,
+  getEvidenceBlobName
+} = require("../../services/azureBlob.service");
 const { generateQuotationPdf } = require("../../services/quotationPdf.service");
 const { clean, normalizeTipoAtencion, parseNonNegativeDecimal } = require("../../shared/utils/orderValidation");
 const { getUsuarioSucursal, requireSucursal } = require("../../shared/services/usuarioContext.service");
@@ -163,7 +168,13 @@ async function buildOrdenDetalle(orden) {
     cotizacion,
     cotizaciones,
     garantia,
-    evidencias,
+    evidencias: evidencias.map((evidencia) => ({
+      ...evidencia,
+      archivo_gestionado: Boolean(
+        getEvidenceBlobName(evidencia.referencia_url)
+        || getEvidenceBlobName(evidencia.url_archivo)
+      )
+    })),
     borrador_tecnico_finalizado: borradorTecnicoFinalizado
   };
 }

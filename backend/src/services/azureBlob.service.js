@@ -53,6 +53,49 @@ async function getPrivateContainerClient() {
   return getContainerClient(containerName, true);
 }
 
+function getEvidenceContainerName() {
+  return process.env.AZURE_STORAGE_CONTAINER || "evidencias";
+}
+
+function getEvidenceBlobName(reference) {
+  const value = String(reference || "").trim();
+
+  if (!value) return null;
+  if (!/^https?:\/\//i.test(value)) {
+    return value.startsWith("orden-") ? value : null;
+  }
+
+  try {
+    const parsedUrl = new URL(value);
+    const configuredOrigins = new Set();
+    const connectionString = process.env.AZURE_STORAGE_CONNECTION_STRING;
+    const publicBaseUrl = process.env.AZURE_STORAGE_PUBLIC_BASE_URL;
+
+    if (connectionString) {
+      configuredOrigins.add(new URL(BlobServiceClient.fromConnectionString(connectionString).url).origin);
+    }
+
+    if (publicBaseUrl) {
+      configuredOrigins.add(new URL(publicBaseUrl).origin);
+    }
+
+    if (!configuredOrigins.has(parsedUrl.origin)) return null;
+
+    const marker = `/${getEvidenceContainerName()}/`;
+    const markerIndex = parsedUrl.pathname.indexOf(marker);
+
+    if (markerIndex < 0) return null;
+
+    return parsedUrl.pathname
+      .slice(markerIndex + marker.length)
+      .split("/")
+      .map((part) => decodeURIComponent(part))
+      .join("/");
+  } catch {
+    return null;
+  }
+}
+
 async function uploadPrivateBuffer(blobName, buffer, contentType, metadata = {}) {
   if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
     const error = new Error("El contenido para Azure Blob Storage esta vacio");
@@ -87,7 +130,7 @@ async function uploadEvidenceFile(file, ordenId) {
     throw error;
   }
 
-  const containerName = process.env.AZURE_STORAGE_CONTAINER || "evidencias";
+  const containerName = getEvidenceContainerName();
   const publicBaseUrl = process.env.AZURE_STORAGE_PUBLIC_BASE_URL;
   const containerClient = await getContainerClient(containerName);
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -115,8 +158,24 @@ async function uploadEvidenceFile(file, ordenId) {
   };
 }
 
+async function downloadEvidenceFile(blobName) {
+  const containerClient = await getContainerClient(getEvidenceContainerName());
+  const blockBlobClient = containerClient.getBlockBlobClient(blobName);
+  const [buffer, properties] = await Promise.all([
+    blockBlobClient.downloadToBuffer(),
+    blockBlobClient.getProperties()
+  ]);
+
+  return {
+    buffer,
+    contentType: properties.contentType || "application/octet-stream"
+  };
+}
+
 module.exports = {
   uploadEvidenceFile,
+  downloadEvidenceFile,
+  getEvidenceBlobName,
   uploadPrivateBuffer,
   downloadPrivateBuffer,
   deletePrivateBlob,

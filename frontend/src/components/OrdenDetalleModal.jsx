@@ -358,6 +358,27 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
       setSaving("");
     }
   }
+  async function handleEvidenceFile(evidencia) {
+    const previewWindow = window.open("", "_blank");
+    setSaving(`ver-evidencia-${evidencia.id_evidencia}`);
+    setError("");
+    try {
+      const response = await api.get(`/ordenes/${idOrden}/evidencias`, {
+        params: { id_evidencia: evidencia.id_evidencia },
+        responseType: "blob"
+      });
+      const objectUrl = URL.createObjectURL(response.data);
+
+      if (previewWindow) previewWindow.location.href = objectUrl;
+      else window.open(objectUrl, "_blank");
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch {
+      previewWindow?.close();
+      setError("No se pudo obtener el archivo de evidencia.");
+    } finally {
+      setSaving("");
+    }
+  }
   async function handleQuotationResponse(respuesta) {
     const confirmations = {
       APROBADA: "La orden avanzara a reparacion. ¿Confirmas la aprobacion del cliente?",
@@ -544,7 +565,8 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
         ["producto", "Cliente / Maquina"],
         ...(!isPuestaEnMarcha && (borradorFinalizado || detalle?.cotizaciones?.length > 0)
           ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]]
-          : [])
+          : []),
+        ["evidencias", "Evidencias"]
       ]
     : workflowMode
       ? [
@@ -552,7 +574,8 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
           ["producto", "Cliente / Maquina"],
           ["diagnostico", isPuestaEnMarcha ? "Comprobaciones" : "Diagnostico"],
           ...(isGarantiaOrder ? [["garantia", "Garantia"]] : []),
-          ...(!isPuestaEnMarcha ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : [])
+          ...(!isPuestaEnMarcha ? [["repuestos", "Repuestos"], ["borrador", "Borrador tecnico"]] : []),
+          ["evidencias", "Evidencias"]
         ]
       : [
           ["resumen", "Resumen"],
@@ -740,7 +763,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
                   </div> : null}
                   {hasFinalDecision ? <p className="alert alert-info mt-3 mb-0">La decision de garantia es final y no puede modificarse desde este flujo.</p> : null}
                 </div> : null}
-                {!isRecepcionista && activeTab === "evidencias" ? <div className="detail-card">
+                {activeTab === "evidencias" ? <div className="detail-card">
                   <div className="d-flex flex-wrap justify-content-between gap-2 mb-3">
                     <h3 className="h6 mb-0">Evidencias</h3>
                     <span className="table-count">{detalle.evidencias.length} registros</span>
@@ -748,7 +771,7 @@ function OrdenDetalleModal({ orden, readOnly = false, workflowMode = false, onCl
 
                   {detalle.evidencias.length > 0 ? <div className="table-responsive"><table className="table table-sm align-middle serial-table"><thead><tr><th>Tipo</th><th>Archivo</th><th>Referencia</th><th>Descripcion</th><th>Fecha</th></tr></thead><tbody>{detalle.evidencias.map((evidencia) => {
                     const evidenciaUrl = evidencia.url_archivo || evidencia.referencia_url;
-                    return <tr key={evidencia.id_evidencia}><td>{evidencia.tipo}</td><td>{evidencia.nombre_archivo}</td><td>{isHttpUrl(evidenciaUrl) ? <a className="btn btn-outline-primary btn-sm" href={evidenciaUrl} target="_blank" rel="noreferrer">Ver archivo</a> : (evidenciaUrl || "Sin referencia")}</td><td>{evidencia.descripcion || "Sin descripcion"}</td><td className="date-cell">{formatDate(evidencia.fecha_subida || evidencia.fecha_creacion)}</td></tr>;
+                    return <tr key={evidencia.id_evidencia}><td>{evidencia.tipo}</td><td>{evidencia.nombre_archivo}</td><td>{evidencia.archivo_gestionado ? <button className="btn btn-outline-primary btn-sm" type="button" disabled={saving === `ver-evidencia-${evidencia.id_evidencia}`} onClick={() => handleEvidenceFile(evidencia)}>{saving === `ver-evidencia-${evidencia.id_evidencia}` ? "Abriendo..." : "Ver archivo"}</button> : isHttpUrl(evidenciaUrl) ? <a className="btn btn-outline-primary btn-sm" href={evidenciaUrl} target="_blank" rel="noreferrer">Ver referencia</a> : (evidenciaUrl || "Sin referencia")}</td><td>{evidencia.descripcion || "Sin descripcion"}</td><td className="date-cell">{formatDate(evidencia.fecha_subida || evidencia.fecha_creacion)}</td></tr>;
                   })}</tbody></table></div> : <p className="empty-state">No hay evidencias registradas.</p>}
 
                   {!isReadOnly ? <div className="row g-3 mt-2">

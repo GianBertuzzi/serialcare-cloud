@@ -3,7 +3,11 @@ const multer = require("multer");
 const db = require("../../db");
 const verificarToken = require("../../middlewares/verificarToken");
 const verificarRol = require("../../middlewares/verificarRol");
-const { uploadEvidenceFile } = require("../../services/azureBlob.service");
+const {
+  downloadEvidenceFile,
+  getEvidenceBlobName,
+  uploadEvidenceFile
+} = require("../../services/azureBlob.service");
 const { clean, normalizeTipoAtencion, parsePositiveInteger } = require("../../shared/utils/orderValidation");
 const {
   getOrdenParaUsuario,
@@ -312,7 +316,7 @@ router.delete("/:id/repuestos/:idDetalle", verificarRol("ADMIN", "TECNICO"), asy
   }
 });
 
-router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async (req, res) => {
+router.get("/:id/evidencias", verificarRol("ADMIN", "RECEPCIONISTA", "TECNICO", "CLIENTE"), async (req, res) => {
   try {
     const access = await getOrdenParaUsuario(req.params.id, req.usuario, true, true);
 
@@ -320,11 +324,61 @@ router.get("/:id/evidencias", verificarRol("ADMIN", "TECNICO", "CLIENTE"), async
       return res.status(access.status).json({ error: access.error });
     }
 
+    if (req.query.id_evidencia !== undefined) {
+      const idEvidencia = Number(req.query.id_evidencia);
+
+      if (!Number.isInteger(idEvidencia) || idEvidencia <= 0) {
+        return res.status(400).json({ error: "id_evidencia no es valido" });
+      }
+
+      const evidenciaResult = await db.query(
+        `SELECT id_evidencia, nombre_archivo, referencia_url, url_archivo
+        FROM evidencias_orden
+        WHERE id_evidencia = $1
+          AND id_orden = $2
+        LIMIT 1`,
+        [idEvidencia, access.orden.id_orden]
+      );
+      const evidencia = evidenciaResult.rows[0];
+
+      if (!evidencia) {
+        return res.status(404).json({ error: "Evidencia no encontrada" });
+      }
+
+      const blobName = getEvidenceBlobName(evidencia.referencia_url)
+        || getEvidenceBlobName(evidencia.url_archivo);
+
+      if (!blobName) {
+        return res.status(409).json({ error: "La evidencia corresponde a una referencia externa" });
+      }
+
+      const downloaded = await downloadEvidenceFile(blobName);
+      const fileName = (evidencia.nombre_archivo || "evidencia").replace(/[^a-zA-Z0-9._-]/g, "-");
+      res.setHeader("Content-Type", downloaded.contentType);
+      res.setHeader("Content-Disposition", `inline; filename="${fileName}"`);
+      return res.send(downloaded.buffer);
+    }
+
     const evidencias = await getEvidencias(access.orden.id_orden);
-    return res.json({ evidencias });
+    return res.json({
+      evidencias: evidencias.map((evidencia) => ({
+        ...evidencia,
+        archivo_gestionado: Boolean(
+          getEvidenceBlobName(evidencia.referencia_url)
+          || getEvidenceBlobName(evidencia.url_archivo)
+        )
+      }))
+    });
   } catch (error) {
-    console.error("Error obteniendo evidencias:", error);
-    return res.status(500).json({ error: "Error interno del servidor" });
+    const status = error.status || 500;
+    console.error("Error obteniendo evidencias:", {
+      message: error.message,
+      code: error.code,
+      status
+    });
+    return res.status(status).json({
+      error: status === 500 ? "Error interno del servidor" : error.message
+    });
   }
 });
 
@@ -349,6 +403,13 @@ router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), uploadEvidencia
       return res.status(access.status).json({ error: access.error });
     }
 
+    if (
+      req.usuario.rol === "TECNICO"
+      && Number(access.orden.id_responsable) !== Number(req.usuario.id_usuario)
+    ) {
+      return res.status(404).json({ error: "Orden no encontrada para el tecnico" });
+    }
+
     let evidenciaData = {
       nombre_archivo: nombreArchivo || "Referencia sin archivo",
       url_archivo: referenciaUrl || null,
@@ -361,7 +422,7 @@ router.post("/:id/evidencias", verificarRol("ADMIN", "TECNICO"), uploadEvidencia
       evidenciaData = {
         nombre_archivo: uploaded.nombre_archivo,
         url_archivo: uploaded.url_archivo,
-        referencia_url: uploaded.url_archivo,
+        referencia_url: uploaded.blob_name,
         descripcion,
         mimetype: uploaded.mimetype,
         size: uploaded.size
