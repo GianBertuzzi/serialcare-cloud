@@ -379,6 +379,10 @@ Resources:
 
   AppInstance:
     Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Count: 1
+        Timeout: PT45M
     DependsOn:
       - PrivateDefaultRoute
     Properties:
@@ -409,8 +413,54 @@ Resources:
           INSTALL_DIR=/opt/serialcare-cloud
           ENV_FILE=/etc/serialcare/serialcare.env
           OVERRIDE_FILE=/etc/serialcare/docker-compose.aws.yml
+          CFN_SIGNAL=/opt/aws/bin/cfn-signal
+
+          print_bootstrap_diagnostics() {
+            set +e
+            echo "ERROR: bootstrap de SerialCare fallo; recopilando diagnostico." >&2
+
+            if [ -d "$INSTALL_DIR" ] && [ -f "$ENV_FILE" ] && [ -f "$OVERRIDE_FILE" ] && docker compose version >/dev/null 2>&1; then
+              cd "$INSTALL_DIR" || return 0
+              DIAGNOSTIC_COMPOSE=(docker compose --env-file "$ENV_FILE" -f docker-compose.eval4.yml -f "$OVERRIDE_FILE")
+              "${!DIAGNOSTIC_COMPOSE[@]}" ps --all || true
+              "${!DIAGNOSTIC_COMPOSE[@]}" logs --no-color --tail=200 migrate || true
+              "${!DIAGNOSTIC_COMPOSE[@]}" logs --no-color --tail=200 frontend-gateway || true
+            else
+              echo "Diagnostico de Compose no disponible porque el bootstrap fallo antes de crear su configuracion." >&2
+            fi
+          }
+
+          signal_bootstrap_result() {
+            exit_code=$?
+            trap - EXIT
+            set +e
+
+            if [ "$exit_code" -ne 0 ]; then
+              print_bootstrap_diagnostics
+            fi
+
+            signal_exit=0
+            if [ -x "$CFN_SIGNAL" ]; then
+              "$CFN_SIGNAL" -e "$exit_code" --stack "${AWS::StackName}" --resource AppInstance --region "${AWS::Region}" || signal_exit=$?
+            else
+              echo "ERROR: cfn-signal no esta disponible en $CFN_SIGNAL." >&2
+              signal_exit=1
+            fi
+
+            if [ "$exit_code" -eq 0 ] && [ "$signal_exit" -ne 0 ]; then
+              exit "$signal_exit"
+            fi
+
+            exit "$exit_code"
+          }
+
+          trap signal_bootstrap_result EXIT
 
           dnf install -y docker git
+          dnf install -y aws-cfn-bootstrap
+          rpm -q curl-minimal
+          command -v curl >/dev/null
+          test -x "$CFN_SIGNAL"
           systemctl enable --now docker
           install -d -m 0755 /usr/local/lib/docker/cli-plugins /etc/serialcare
 
@@ -508,18 +558,24 @@ Resources:
 
           MIGRATE_ID="$("${!COMPOSE[@]}" ps -aq migrate)"
           test -n "$MIGRATE_ID"
+          test "$(docker inspect --format '{{.State.Status}}' "$MIGRATE_ID")" = "exited"
           test "$(docker inspect --format '{{.State.ExitCode}}' "$MIGRATE_ID")" = "0"
 
+          GATEWAY_READY=false
           for attempt in $(seq 1 60); do
             if curl -fsS http://127.0.0.1/health >/dev/null; then
-              exit 0
+              GATEWAY_READY=true
+              break
             fi
             sleep 5
           done
 
-          "${!COMPOSE[@]}" ps --all
-          echo "ERROR: el gateway no alcanzo estado saludable." >&2
-          exit 1
+          if [ "$GATEWAY_READY" != "true" ]; then
+            echo "ERROR: el gateway no alcanzo estado saludable." >&2
+            exit 1
+          fi
+
+          echo "Bootstrap SerialCare completado; migraciones y gateway saludables."
 
   # AWS Academy demonstration requires a public entry point and does not provide private client connectivity.
   #trivy:ignore:AVD-AWS-0053

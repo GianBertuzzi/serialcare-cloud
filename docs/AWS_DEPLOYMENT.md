@@ -34,7 +34,7 @@ La implementación académica usa un solo host de aplicación para que exista un
 ## Responsabilidades
 
 - CloudFormation crea VPC, subredes, NAT Gateway, Security Groups, ALB, EC2 privada y RDS.
-- `UserData` realiza el bootstrap inicial del host, verifica Docker Compose, obtiene la rama configurada y levanta el stack modular.
+- `UserData` realiza el bootstrap inicial del host, verifica Docker Compose, obtiene la rama configurada y levanta el stack modular. La EC2 tiene una `CreationPolicy` y solo envía `SUCCESS` mediante `cfn-signal` cuando las migraciones y el gateway están saludables.
 - Ansible es la vía recomendada para actualizaciones repetibles sobre una VM Linux accesible por un canal administrativo privado.
 - `docker-compose.eval4.yml` define el gateway, los cuatro módulos, PostgreSQL local y el servicio `migrate`.
 - El override AWS desactiva PostgreSQL local, elimina los puertos 3001-3004 y conecta `migrate` y los módulos al RDS compartido.
@@ -119,7 +119,20 @@ aws cloudformation deploy `
     DBUsername=serialcare_user
 ```
 
-El comando es deliberadamente incompleto: DBPassword, BootstrapAdminPassword, JwtSecret y otros secretos requeridos deben ingresarse mediante un canal seguro.
+El comando es deliberadamente incompleto: `DBPassword`, `BootstrapAdminPassword`, `JwtSecret` y la conexión de Azure deben ingresarse mediante un canal seguro.
+
+### Crear una pila nueva desde cero
+
+1. Confirme que `RepositoryRef` exista en el repositorio remoto y que contenga `database/bootstrap.sql`, `database/bootstrap-seed.sql` y las migraciones 001-010.
+2. En CloudFormation, cree una pila estándar usando `infrastructure/cloudformation-serialcare.yaml`.
+3. Ingrese obligatoriamente `GitHubRepoUrl`, `DBPassword`, `BootstrapAdminPassword` y `JwtSecret`.
+4. Revise `DBName`, `DBUsername`, `BootstrapAdminName`, `BootstrapAdminEmail`, `RepositoryRef`, `InstanceType`, `VpcCidr` y los cuatro CIDR de subred. Los valores predeterminados son válidos solo si no se superponen con redes del laboratorio.
+5. Ingrese `AzureStorageConnectionString`, `AzureStorageContainer` y `AzureStoragePublicBaseUrl` cuando se probarán PDF o evidencias reales. La cadena puede quedar vacía únicamente para healthchecks y flujos sin archivos.
+6. Mantenga `LatestAmiId` con el parámetro SSM de Amazon Linux 2023, salvo que el laboratorio exija otro AMI compatible.
+7. Cree la pila y espere la señal de `AppInstance`. No considere el despliegue exitoso hasta que la pila quede `CREATE_COMPLETE` y `HealthCheckUrl` responda 200.
+8. Si `AppInstance` emite `CREATE_FAILED`, revise el evento de señalización y `/var/log/serialcare-bootstrap.log` mediante el mecanismo privado autorizado por el laboratorio. Para conservar recursos durante diagnóstico, deshabilite el rollback solo de forma temporal al crear la pila.
+
+No ejecute `schema.sql`, `seed.sql` ni comandos `psql` manuales. En una RDS vacía, el único flujo admitido es `bootstrap.sql` → `bootstrap-seed.sql` → migraciones 001-010 → módulos.
 
 Consultar outputs:
 
@@ -133,15 +146,16 @@ aws cloudformation describe-stacks `
 
 `UserData`:
 
-1. Instala Docker, Git y curl desde los repositorios de Amazon Linux.
+1. Instala Docker, Git y `aws-cfn-bootstrap`. Amazon Linux 2023 ya incluye `curl-minimal`: el script verifica el paquete y el comando `curl`, pero no instala el paquete `curl`, evitando el conflicto entre ambos RPM.
 2. Descarga Docker Compose v2.29.7 y verifica su SHA-256 con el archivo oficial.
 3. Clona el repositorio o hace avance rápido de una copia limpia a `RepositoryRef`; no borra el checkout ni sobrescribe cambios.
 4. Crea `/etc/serialcare/serialcare.env` con permisos `0600`.
 5. Genera un override que desactiva PostgreSQL local, retira puertos internos y publica únicamente el gateway en el puerto 80 de la EC2.
 6. Ejecuta `docker compose config`, construye las imágenes y ejecuta `up -d`.
-7. Verifica que `db:initialize` complete bootstrap y migraciones con código 0; luego espera `GET /health` del gateway.
+7. Verifica que el contenedor `migrate` haya terminado realmente con estado `exited` y código 0; luego espera `GET /health` del gateway.
+8. Envía `SUCCESS` a CloudFormation mediante `/opt/aws/bin/cfn-signal`. Cualquier error activa un trap que muestra `docker compose ps --all`, los logs de `migrate` y los logs de `frontend-gateway`, y envía `FAILURE`.
 
-Los logs quedan en `/var/log/serialcare-bootstrap.log` y `/var/log/cloud-init-output.log`.
+Los logs quedan en `/var/log/serialcare-bootstrap.log` y `/var/log/cloud-init-output.log`. La `CreationPolicy` espera una señal durante un máximo de 45 minutos; si el UserData falla o no logra señalizar, `AppInstance` y la pila no alcanzan `CREATE_COMPLETE`.
 
 ## Base de datos y migraciones
 
@@ -228,7 +242,7 @@ Azure puede quedar vacío para comprobar contenedores y healthchecks. La generac
 - RDS y EC2 no tienen IP pública.
 - IMDSv2 es obligatorio.
 - El ALB es la única entrada pública.
-- Los secretos CloudFormation usan `NoEcho`; el archivo de entorno usa modo `0600`.
+- Los secretos CloudFormation usan `NoEcho`; el archivo de entorno usa modo `0600`. La `CreationPolicy` impide declarar exitoso el host antes de que `cfn-signal` confirme migraciones y gateway.
 - El egress HTTPS de la EC2 se conserva para repositorios, registro de imágenes y Azure; la excepción IaC es específica y documentada.
 - No hay dominio ni certificado ACM en AWS Academy. El listener HTTP y su excepción IaC se mantienen exclusivamente para la demostración académica. En un entorno real, agregue ACM, listener 443 y redirección 80 a 443.
 - La arquitectura académica usa una sola EC2 y no ofrece alta disponibilidad del cómputo.
